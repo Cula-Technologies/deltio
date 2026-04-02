@@ -358,7 +358,7 @@ impl SubscriptionActor {
 
             // Check if we should dead-letter this message.
             if let Some(ref dlp) = self.info.dead_letter_policy {
-                if *attempt as i32 >= dlp.max_delivery_attempts {
+                if *attempt as i32 > dlp.max_delivery_attempts {
                     // Create a new TopicMessage for the DLQ topic from the original.
                     let dlq_message =
                         TopicMessage::new(message.data.clone(), message.attributes.clone());

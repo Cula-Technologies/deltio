@@ -762,11 +762,11 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
     // so it's ready to receive the dead-lettered message.
     let (dlq_sender, mut dlq_inbound) = server.streaming_pull(&dlq_subscription_name).await;
 
-    // NACK the message enough times to exceed max_delivery_attempts (5).
-    // First delivery = attempt 1, then NACK 4 more times to reach 5.
+    // NACK the message for all 5 delivery attempts. After the 5th nack,
+    // the message should be dead-lettered.
     let (sender, mut inbound) = server.streaming_pull(&subscription_name).await;
 
-    for i in 1..5 {
+    for i in 1..6 {
         let pull_response = inbound.next().await.unwrap().unwrap();
         assert_eq!(pull_response.received_messages.len(), 1);
         assert_eq!(
@@ -856,8 +856,8 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_expiry() {
     // Start streaming pull.
     let (sender, mut inbound) = server.streaming_pull(&subscription_name).await;
 
-    // Pull the message, don't ACK it, let it expire repeatedly.
-    for i in 1..5 {
+    // Pull the message, don't ACK it, let it expire for all 5 delivery attempts.
+    for i in 1..6 {
         let pull_response = inbound.next().await.unwrap().unwrap();
         assert_eq!(pull_response.received_messages.len(), 1);
         assert_eq!(

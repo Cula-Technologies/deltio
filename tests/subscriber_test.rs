@@ -595,10 +595,7 @@ async fn test_retry_policy_with_backoff() {
     let ack_id = received.ack_id.clone();
 
     // NACK the message.
-    sender
-        .send(streaming_nack(vec![ack_id]))
-        .await
-        .unwrap();
+    sender.send(streaming_nack(vec![ack_id])).await.unwrap();
 
     // Advance time by 500ms — not enough for the 1s backoff.
     time::advance(Duration::from_millis(500)).await;
@@ -649,10 +646,7 @@ async fn test_no_retry_policy_immediate_redelivery() {
     let ack_id = pull_response.received_messages[0].ack_id.clone();
 
     // NACK it — should be immediately redelivered (no backoff).
-    sender
-        .send(streaming_nack(vec![ack_id]))
-        .await
-        .unwrap();
+    sender.send(streaming_nack(vec![ack_id])).await.unwrap();
 
     // Pause time to ensure we're not relying on real time.
     time::pause();
@@ -714,7 +708,10 @@ async fn test_retry_policy_stored_and_returned() {
         .unwrap();
 
     let sub = response.get_ref();
-    let rp = sub.retry_policy.as_ref().expect("retry_policy should be set");
+    let rp = sub
+        .retry_policy
+        .as_ref()
+        .expect("retry_policy should be set");
     assert_eq!(rp.minimum_backoff.as_ref().unwrap().seconds, 5);
     assert_eq!(rp.maximum_backoff.as_ref().unwrap().seconds, 300);
 
@@ -760,12 +757,8 @@ async fn test_dlq_policy_stored_and_returned() {
     server.create_topic_with_name(&dlq_topic_name).await;
 
     let subscription_name = SubscriptionName::new("test", "dlq_sub");
-    let resource = map_to_subscription_resource_with_dlq(
-        &subscription_name,
-        &topic_name,
-        &dlq_topic_name,
-        10,
-    );
+    let resource =
+        map_to_subscription_resource_with_dlq(&subscription_name, &topic_name, &dlq_topic_name, 10);
 
     let response = server
         .subscriber
@@ -817,12 +810,8 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
 
     // Create a subscription on the source topic with DLQ (max 5 attempts).
     let subscription_name = SubscriptionName::new("test", "dlq_nack_sub");
-    let resource = map_to_subscription_resource_with_dlq(
-        &subscription_name,
-        &source_topic,
-        &dlq_topic,
-        5,
-    );
+    let resource =
+        map_to_subscription_resource_with_dlq(&subscription_name, &source_topic, &dlq_topic, 5);
     server
         .subscriber
         .create_subscription(resource)
@@ -848,18 +837,14 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
         let pull_response = inbound.next().await.unwrap().unwrap();
         assert_eq!(pull_response.received_messages.len(), 1);
         assert_eq!(
-            pull_response.received_messages[0].delivery_attempt,
-            i,
+            pull_response.received_messages[0].delivery_attempt, i,
             "delivery_attempt should be {}",
             i,
         );
         let ack_id = pull_response.received_messages[0].ack_id.clone();
 
         // NACK the message.
-        sender
-            .send(streaming_nack(vec![ack_id]))
-            .await
-            .unwrap();
+        sender.send(streaming_nack(vec![ack_id])).await.unwrap();
 
         // Give the actor time to process.
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -922,12 +907,8 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_expiry() {
 
     // Create a subscription with DLQ (max 5 attempts) and short ACK deadline.
     let subscription_name = SubscriptionName::new("test", "dlq_expiry_sub");
-    let mut resource = map_to_subscription_resource_with_dlq(
-        &subscription_name,
-        &source_topic,
-        &dlq_topic,
-        5,
-    );
+    let mut resource =
+        map_to_subscription_resource_with_dlq(&subscription_name, &source_topic, &dlq_topic, 5);
     resource.ack_deadline_seconds = 10;
     server
         .subscriber
@@ -954,8 +935,7 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_expiry() {
         let pull_response = inbound.next().await.unwrap().unwrap();
         assert_eq!(pull_response.received_messages.len(), 1);
         assert_eq!(
-            pull_response.received_messages[0].delivery_attempt,
-            i,
+            pull_response.received_messages[0].delivery_attempt, i,
             "delivery_attempt should be {}",
             i,
         );
@@ -1013,12 +993,8 @@ async fn test_delivery_attempt_reported_with_dlp() {
     server.create_topic_with_name(&dlq_topic).await;
 
     let subscription_name = SubscriptionName::new("test", "dlp_attempt_sub");
-    let resource = map_to_subscription_resource_with_dlq(
-        &subscription_name,
-        &source_topic,
-        &dlq_topic,
-        10,
-    );
+    let resource =
+        map_to_subscription_resource_with_dlq(&subscription_name, &source_topic, &dlq_topic, 10);
     server
         .subscriber
         .create_subscription(resource)
@@ -1039,10 +1015,7 @@ async fn test_delivery_attempt_reported_with_dlp() {
 
     // NACK it.
     let ack_id = pull_response.received_messages[0].ack_id.clone();
-    sender
-        .send(streaming_nack(vec![ack_id]))
-        .await
-        .unwrap();
+    sender.send(streaming_nack(vec![ack_id])).await.unwrap();
 
     // Give time for requeue.
     tokio::time::sleep(Duration::from_millis(50)).await;

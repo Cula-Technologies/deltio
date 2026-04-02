@@ -672,10 +672,13 @@ fn map_to_subscription_resource(
         enable_message_ordering: false,
         expiration_policy: None,
         filter: Default::default(),
-        dead_letter_policy: info.dead_letter_policy.as_ref().map(|dlp| DeadLetterPolicyProto {
-            dead_letter_topic: dlp.dead_letter_topic.to_string(),
-            max_delivery_attempts: dlp.max_delivery_attempts,
-        }),
+        dead_letter_policy: info
+            .dead_letter_policy
+            .as_ref()
+            .map(|dlp| DeadLetterPolicyProto {
+                dead_letter_topic: dlp.dead_letter_topic.to_string(),
+                max_delivery_attempts: dlp.max_delivery_attempts,
+            }),
         retry_policy: info.retry_policy.as_ref().map(|rp| RetryPolicyProto {
             minimum_backoff: Some(prost_types::Duration {
                 seconds: rp.minimum_backoff.as_secs() as i64,

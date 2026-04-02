@@ -361,6 +361,9 @@ mod tests {
             maximum_backoff: Duration::from_secs(u64::MAX),
         };
         // attempt 100: exponent capped at 20, so 1 * 2^20 = 1048576s
-        assert_eq!(policy.calculate_backoff(100), Duration::from_secs(1_048_576));
+        assert_eq!(
+            policy.calculate_backoff(100),
+            Duration::from_secs(1_048_576)
+        );
     }
 }

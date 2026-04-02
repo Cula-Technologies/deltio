@@ -425,11 +425,7 @@ impl SubscriptionActor {
 
     /// Handles messages whose retry backoff has elapsed by moving them to the backlog.
     fn handle_retry_ready(&mut self, ready: Vec<Arc<TopicMessage>>) {
-        log::debug!(
-            "{}: {} retry messages ready",
-            &self.info.name,
-            ready.len()
-        );
+        log::debug!("{}: {} retry messages ready", &self.info.name, ready.len());
         self.backlog.append(ready);
         if !self.backlog.is_empty() {
             self.observer.notify_new_messages_available();

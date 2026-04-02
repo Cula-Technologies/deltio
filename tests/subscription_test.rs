@@ -165,7 +165,13 @@ async fn test_push_registry_integration() {
     let push_config = PushConfig::new("http://end.point".to_string(), None, None);
     let (_, subscription) =
         new_topic_and_subscription_fn(&topic_manager, &subscription_manager, |name| {
-            SubscriptionInfo::new(name, Duration::from_secs(10), Some(push_config.clone()), None, None)
+            SubscriptionInfo::new(
+                name,
+                Duration::from_secs(10),
+                Some(push_config.clone()),
+                None,
+                None,
+            )
         })
         .await;
 

@@ -2,7 +2,8 @@ use deltio::pubsub_proto::publisher_client::PublisherClient;
 use deltio::pubsub_proto::subscriber_client::SubscriberClient;
 use deltio::pubsub_proto::{
     AcknowledgeRequest, DeadLetterPolicy as DeadLetterPolicyProto, ModifyAckDeadlineRequest,
-    PublishRequest, PubsubMessage, StreamingPullRequest, StreamingPullResponse, Subscription, Topic,
+    PublishRequest, PubsubMessage, StreamingPullRequest, StreamingPullResponse, Subscription,
+    Topic,
 };
 use deltio::subscriptions::SubscriptionName;
 use deltio::topics::TopicName;

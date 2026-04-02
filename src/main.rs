@@ -80,7 +80,10 @@ async fn main_core(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let server = app.server_builder();
     let push_loop_fut = app
-        .push_loop(Duration::from_millis(args.push_loop_interval), args.push_concurrency)
+        .push_loop(
+            Duration::from_millis(args.push_loop_interval),
+            args.push_concurrency,
+        )
         .run();
 
     // Start listening (TCP).

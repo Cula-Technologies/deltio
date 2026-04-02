@@ -1,7 +1,18 @@
 FROM --platform=$BUILDPLATFORM rust:1.94 AS build
 
-# Install Protocol Buffers.
-RUN apt-get update && apt-get install -y protobuf-compiler clang musl-tools musl-dev
+# Install Protocol Buffers and curl.
+RUN apt-get update && apt-get install -y protobuf-compiler curl xz-utils
+
+# Install Zig (used by cargo-zigbuild for cross-compilation).
+ARG ZIG_VERSION=0.14.0
+RUN ARCH=$(uname -m) && \
+    mkdir -p /opt/zig && \
+    curl -sSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ARCH}-${ZIG_VERSION}.tar.xz" \
+    | tar -xJ -C /opt/zig --strip-components=1
+ENV PATH="/opt/zig:${PATH}"
+
+# Install cargo-zigbuild.
+RUN cargo install --locked cargo-zigbuild
 
 # Create a new empty project.
 RUN cargo new --bin deltio
@@ -15,38 +26,22 @@ ARG TARGETPLATFORM
 # Populated by BuildX
 ARG BUILDPLATFORM
 
-# Install the required cross-compiler toolchain based on the target platform.
-# Basically, if the target platform is ARM, then we'll need 
-# the `gcc-arm-linux-gnueabihf` linker, otherwise we'll need
-# the `gcc-multilib`.
-# IMPORTANT: This only seems to work on a x86_64 Linux build platform. 
+# Add the required Rust target based on the target platform.
 RUN <<EOF
   set -e;
-
-  # This is the file we will be writing the compilation target to for
-  # subsequent steps.
   touch .target
-  
+
   if [ "$TARGETPLATFORM" = "linux/arm64" ]; then
-    # musl-cross isn't available via apt-get, so have to download and install it manually.
-    mkdir /opt/musl-cross
-    wget -P /opt/musl-cross https://musl.cc/aarch64-linux-musl-cross.tgz
-    tar -xvf /opt/musl-cross/aarch64-linux-musl-cross.tgz -C "/opt/musl-cross"
     rustup target add aarch64-unknown-linux-musl
     echo -n "aarch64-unknown-linux-musl" > .target
-  else
-    if [ "$TARGETPLATFORM" = "linux/amd64" ]; then
-      rustup target add x86_64-unknown-linux-musl
-      echo -n "x86_64-unknown-linux-musl" > .target
-    elif [ "$TARGETPLATFORM" = "linux/386" ]; then
-      rustup target add i686-unknown-linux-musl
-      echo -n "i686-unknown-linux-musl" > .target
-    fi
+  elif [ "$TARGETPLATFORM" = "linux/amd64" ]; then
+    rustup target add x86_64-unknown-linux-musl
+    echo -n "x86_64-unknown-linux-musl" > .target
+  elif [ "$TARGETPLATFORM" = "linux/386" ]; then
+    rustup target add i686-unknown-linux-musl
+    echo -n "i686-unknown-linux-musl" > .target
   fi
 EOF
-
-# In case we installed the musl-cross tools, add it to the path.
-ENV PATH="/opt/musl-cross/aarch64-linux-musl-cross/bin:${PATH}"
 
 # Copy manifests.
 COPY ./.cargo/config.toml ./.cargo/config.toml
@@ -56,21 +51,13 @@ COPY ./Cargo.toml ./Cargo.toml
 # Build the shell project first to get a dependency cache.
 RUN <<EOF
   set -e;
-
-  # If the build platform is the same as the target platform, we don't
-  # need to use any target.
   TARGET=$(cat .target)
-  # Use clang except for aarch64 musl
-  if [ "$TARGET" != "aarch64-unknown-linux-musl" ]; then
-    export CC="clang"
-    export CXX="clang++"
-  fi
 
   if [ -z "$TARGET" ]; then
     cargo build --release
     rm ./target/release/deps/deltio*
   else
-    cargo build --target "$TARGET" --release
+    cargo zigbuild --target "$TARGET" --release
     rm ./target/*/release/deps/deltio*
   fi
 
@@ -86,22 +73,14 @@ COPY ./src ./src
 # Build for release
 RUN <<EOF
   set -e;
-  # If the build platform is the same as the target platform, we don't
-  # need to use any target.
   TARGET=$(cat .target)
-  
-  # Use clang except for aarch64 musl
-  if [ "$TARGET" != "aarch64-unknown-linux-musl" ]; then
-    export CC="clang"
-    export CXX="clang++"
-  fi 
-  
+
   if [ -z "$TARGET" ]; then
     cargo build --release
     exit 0
   fi
 
-  cargo build --target "$TARGET" --release
+  cargo zigbuild --target "$TARGET" --release
   mv "target/$TARGET/release/deltio" "target/release/deltio"
 EOF
 

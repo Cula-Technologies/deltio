@@ -279,10 +279,39 @@ async fn test_dead_letter_queue() -> Result<()> {
         },
         Some(message) = dlq_stream.next() => {
             let data = String::from_utf8_lossy(&message.message.data);
+            let attrs = &message.message.attributes;
             println!("  DLQ received: {}", data);
+            println!("  DLQ attributes: {:?}", attrs);
             assert_eq!(data, "dlq-me", "DLQ message data mismatch");
+
+            // Verify dead-letter attributes are present.
+            assert!(
+                attrs.contains_key("CloudPubSubDeadLetterSourceDeliveryCount"),
+                "missing CloudPubSubDeadLetterSourceDeliveryCount"
+            );
+            assert!(
+                attrs.contains_key("CloudPubSubDeadLetterSourceSubscription"),
+                "missing CloudPubSubDeadLetterSourceSubscription"
+            );
+            assert_eq!(
+                attrs.get("CloudPubSubDeadLetterSourceSubscription").unwrap(),
+                "dlq-subscription"
+            );
+            assert!(
+                attrs.contains_key("CloudPubSubDeadLetterSourceSubscriptionProject"),
+                "missing CloudPubSubDeadLetterSourceSubscriptionProject"
+            );
+            assert_eq!(
+                attrs.get("CloudPubSubDeadLetterSourceSubscriptionProject").unwrap(),
+                "local-project"
+            );
+            assert!(
+                attrs.contains_key("CloudPubSubDeadLetterSourceTopicPublishTime"),
+                "missing CloudPubSubDeadLetterSourceTopicPublishTime"
+            );
+
             message.ack().await?;
-            println!("  OK: message was dead-lettered successfully");
+            println!("  OK: message was dead-lettered with correct attributes");
         }
     }
 

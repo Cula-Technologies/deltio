@@ -358,14 +358,32 @@ impl SubscriptionActor {
 
             // Check if we should dead-letter this message.
             if let Some(ref dlp) = self.info.dead_letter_policy
-                && *attempt as i32 > dlp.max_delivery_attempts {
-                    // Create a new TopicMessage for the DLQ topic from the original.
-                    let dlq_message =
-                        TopicMessage::new(message.data.clone(), message.attributes.clone());
-                    dead_letter_messages.push(dlq_message);
-                    dead_letter_message_ids.push(message_id);
-                    continue;
-                }
+                && *attempt as i32 > dlp.max_delivery_attempts
+            {
+                // Build attributes for the DLQ message, merging with the original attributes.
+                let mut attrs = message.attributes.clone().unwrap_or_default();
+                attrs.insert(
+                    "CloudPubSubDeadLetterSourceDeliveryCount".into(),
+                    (*attempt - 1).to_string(),
+                );
+                attrs.insert(
+                    "CloudPubSubDeadLetterSourceSubscription".into(),
+                    self.info.name.subscription_id().to_string(),
+                );
+                attrs.insert(
+                    "CloudPubSubDeadLetterSourceSubscriptionProject".into(),
+                    self.info.name.project_id().to_string(),
+                );
+                attrs.insert(
+                    "CloudPubSubDeadLetterSourceTopicPublishTime".into(),
+                    crate::time::format_rfc3339(message.published_at),
+                );
+
+                let dlq_message = TopicMessage::new(message.data.clone(), Some(attrs));
+                dead_letter_messages.push(dlq_message);
+                dead_letter_message_ids.push(message_id);
+                continue;
+            }
 
             if let Some(ref retry_policy) = self.info.retry_policy {
                 let backoff = retry_policy.calculate_backoff(*attempt);

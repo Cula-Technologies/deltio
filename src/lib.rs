@@ -1,5 +1,6 @@
 mod api;
 mod collections;
+mod time;
 pub mod paging;
 pub mod pubsub_proto;
 pub mod push;

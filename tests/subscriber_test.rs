@@ -758,10 +758,21 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
         .create_subscription_with_name(&dlq_topic, &dlq_subscription_name)
         .await;
 
-    // Publish a message to the source topic.
+    // Publish a message to the source topic with a user attribute.
     server
-        .publish_text_messages(&source_topic, vec!["dlq_me".into()])
-        .await;
+        .publisher
+        .publish(PublishRequest {
+            topic: source_topic.to_string(),
+            messages: vec![PubsubMessage {
+                data: "dlq_me".into(),
+                attributes: [("user-attr".to_string(), "user-value".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
 
     // Set up a streaming pull on the DLQ subscription before nacking,
     // so it's ready to receive the dead-lettered message.
@@ -808,6 +819,27 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
         .unwrap(),
         "dlq_me"
     );
+
+    // Verify dead-letter attributes.
+    let dlq_msg = dlq_response.received_messages[0].message.clone().unwrap();
+    let attrs = &dlq_msg.attributes;
+    assert_eq!(
+        attrs.get("CloudPubSubDeadLetterSourceDeliveryCount").unwrap(),
+        "5"
+    );
+    assert_eq!(
+        attrs.get("CloudPubSubDeadLetterSourceSubscription").unwrap(),
+        "dlq_nack_sub"
+    );
+    assert_eq!(
+        attrs
+            .get("CloudPubSubDeadLetterSourceSubscriptionProject")
+            .unwrap(),
+        "test"
+    );
+    assert!(attrs.contains_key("CloudPubSubDeadLetterSourceTopicPublishTime"));
+    // Verify the original user attribute was preserved.
+    assert_eq!(attrs.get("user-attr").unwrap(), "user-value");
 
     drop(dlq_sender);
     drop(dlq_inbound);

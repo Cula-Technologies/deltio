@@ -393,7 +393,7 @@ impl SubscriptionActor {
     }
 
     fn try_publish_dead_lettered_messages(&mut self, dead_letter_messages: Vec<TopicMessage>) {
-        if let (Some(ref topic_manager), Some(ref dlp)) =
+        if let (Some(topic_manager), Some(dlp)) =
             (&self.topic_manager, &self.info.dead_letter_policy)
         {
             match topic_manager.get_topic(&dlp.dead_letter_topic) {

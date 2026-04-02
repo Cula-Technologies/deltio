@@ -1,7 +1,7 @@
 [package]
 name = "deltio"
 version = "0.6.0"
-edition = "2021"
+edition = "2024"
 authors = ["Jeff Hansen"]
 description = "A Google Cloud Pub/Sub emulator alternative for local testing and CI"
 

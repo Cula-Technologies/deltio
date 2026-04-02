@@ -272,8 +272,9 @@ impl Subscriber for SubscriberService {
         let subscription_name = parser::parse_subscription_name(&request.subscription)?;
         let subscription = get_subscription(&self.subscription_manager, &subscription_name)?;
 
+        let ack_count = ack_ids.len();
         subscription
-            .acknowledge_messages(ack_ids.clone())
+            .acknowledge_messages(ack_ids)
             .await
             .map_err(|e| match e {
                 AcknowledgeMessagesError::Closed => Status::internal("System is shutting down"),
@@ -282,7 +283,7 @@ impl Subscriber for SubscriberService {
         log::debug!(
             "{}: ack {} messages {}",
             &subscription_name,
-            &ack_ids.len(),
+            ack_count,
             start
         );
 

@@ -150,7 +150,7 @@ impl Subscription {
     /// This does not wait for the message to be processed.
     pub async fn post_messages(
         &self,
-        new_messages: Vec<Arc<TopicMessage>>,
+        new_messages: Arc<[Arc<TopicMessage>]>,
     ) -> Result<(), PostMessagesError> {
         self.sender
             .send(SubscriptionRequest::PostMessages {

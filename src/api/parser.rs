@@ -203,12 +203,12 @@ pub(crate) fn parse_dead_letter_policy(
     })
 }
 
-/// Parses a `TopicMessage`.
-pub(crate) fn parse_topic_message(message_proto: &PubsubMessage) -> TopicMessage {
-    let data = Bytes::from(message_proto.data.clone());
+/// Parses a `TopicMessage`, consuming the proto to avoid cloning data.
+pub(crate) fn parse_topic_message(message_proto: PubsubMessage) -> TopicMessage {
+    let data = Bytes::from(message_proto.data);
     let attributes = match message_proto.attributes.len() {
         0 => None,
-        _ => Some(message_proto.attributes.clone()),
+        _ => Some(message_proto.attributes),
     };
 
     TopicMessage::new(data, attributes)

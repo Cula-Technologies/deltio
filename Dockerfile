@@ -48,6 +48,10 @@ COPY ./.cargo/config.toml ./.cargo/config.toml
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 
+# Copy bench sources so Cargo can validate the [[bench]] targets
+# in the manifest during the dependency caching step.
+COPY ./benches ./benches
+
 # Build the shell project first to get a dependency cache.
 RUN <<EOF
   set -e;

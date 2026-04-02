@@ -25,7 +25,7 @@ const MAX_PULL_COUNT: u16 = 1_000;
 /// Requests for the `SubscriptionActor`.
 pub enum SubscriptionRequest {
     PostMessages {
-        messages: Vec<Arc<TopicMessage>>,
+        messages: Arc<[Arc<TopicMessage>]>,
     },
     GetInfo {
         responder: oneshot::Sender<Result<SubscriptionInfo, GetInfoError>>,
@@ -107,7 +107,7 @@ impl SubscriptionActor {
         delegate: SubscriptionManagerDelegate,
         topic_manager: Option<Arc<TopicManager>>,
     ) -> mpsc::Sender<SubscriptionRequest> {
-        let (sender, mut receiver) = mpsc::channel(16);
+        let (sender, mut receiver) = mpsc::channel(128);
 
         // If push is configured, register it with the push registry.
         if info.push_config.is_some() {
@@ -202,12 +202,12 @@ impl SubscriptionActor {
     }
 
     /// Posts new messages to the subscription.
-    fn post_messages(&mut self, new_messages: Vec<Arc<TopicMessage>>) {
+    fn post_messages(&mut self, new_messages: Arc<[Arc<TopicMessage>]>) {
         if self.deleted {
             return;
         }
 
-        self.backlog.append(new_messages);
+        self.backlog.append(new_messages.iter().cloned());
         self.observer.notify_new_messages_available();
     }
 

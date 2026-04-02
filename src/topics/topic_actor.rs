@@ -75,7 +75,7 @@ impl TopicActor {
         info: TopicInfo,
         topic_internal_id: u32,
     ) -> mpsc::Sender<TopicRequest> {
-        let (sender, mut receiver) = mpsc::channel(16);
+        let (sender, mut receiver) = mpsc::channel(128);
         let mut actor = Self {
             topic_internal_id,
             delegate,
@@ -186,17 +186,16 @@ impl TopicActor {
         // Add them to the topic.
         self.messages.extend(messages.iter().map(Arc::clone));
 
+        // Share the messages across subscriptions using a single Arc'd slice
+        // instead of cloning the Vec for each subscription.
+        let shared_messages: Arc<[Arc<TopicMessage>]> = messages.into();
+
         // Post them to all subscriptions.
         let mut set = tokio::task::JoinSet::new();
         for subscription in self.subscriptions.values() {
-            // Spawn a future to post messages to each subscription.
             let subscription = Arc::clone(subscription);
             set.spawn({
-                // It's unfortunate that we need to clone the vec here, but since it contains
-                // references only it should be ok.
-                let messages = messages.clone();
-
-                // This moves the clones into the future so the borrow checker doesn't yell at us.
+                let messages = Arc::clone(&shared_messages);
                 async move { subscription.post_messages(messages).await }
             });
         }

@@ -79,14 +79,15 @@ impl Publisher for PublisherService {
         request: Request<PublishRequest>,
     ) -> Result<Response<PublishResponse>, Status> {
         let start = ActivitySpan::start();
-        let request = request.get_ref();
+        let request = request.into_inner();
         let topic_name = parser::parse_topic_name(&request.topic)?;
 
         let topic = self.get_topic_internal(&topic_name).await?;
 
+        let message_count = request.messages.len();
         let messages = request
             .messages
-            .iter()
+            .into_iter()
             .map(parser::parse_topic_message)
             .collect::<Vec<_>>();
 
@@ -105,7 +106,7 @@ impl Publisher for PublisherService {
         log::debug!(
             "{}: publishing {} messages {}",
             &topic_name,
-            request.messages.len(),
+            message_count,
             start
         );
 

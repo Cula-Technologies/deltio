@@ -391,7 +391,7 @@ async fn test_streaming_pull_deadline_extension() {
 
     let pull_response = inbound.next().await.unwrap().unwrap();
     assert_eq!(pull_response.received_messages.len(), 1);
-    let received = pull_response.received_messages.get(0).unwrap();
+    let received = pull_response.received_messages.first().unwrap();
     assert_eq!(
         received.message.clone().unwrap().message_id,
         initial_message1.message.unwrap().message_id
@@ -402,6 +402,11 @@ async fn test_streaming_pull_deadline_extension() {
         .send(streaming_ack(vec![received.ack_id.clone()]))
         .await
         .unwrap();
+
+    // Ensure the scheduler processes whatever work was queued before we advance time.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
 
     // Advance the remaining ~10 to receive the 2nd one again.
     time::advance(Duration::from_secs(10)).await;

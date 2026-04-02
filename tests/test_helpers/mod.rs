@@ -1,3 +1,4 @@
+use deltio::Deltio;
 use deltio::pubsub_proto::publisher_client::PublisherClient;
 use deltio::pubsub_proto::subscriber_client::SubscriberClient;
 use deltio::pubsub_proto::{
@@ -7,7 +8,6 @@ use deltio::pubsub_proto::{
 };
 use deltio::subscriptions::SubscriptionName;
 use deltio::topics::TopicName;
-use deltio::Deltio;
 use futures::FutureExt;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
@@ -16,8 +16,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::Sender;
 use tokio::time::timeout;
 use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::{Channel, Endpoint};
 use tonic::Streaming;
+use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
 use uuid::Uuid;
 

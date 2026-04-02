@@ -2,8 +2,8 @@ use crate::api::page_token::PageToken;
 use crate::api::parser;
 use crate::pubsub_proto::publisher_server::Publisher;
 use crate::pubsub_proto::*;
-use crate::topics::topic_manager::TopicManager;
 use crate::topics::TopicName;
+use crate::topics::topic_manager::TopicManager;
 use crate::topics::{
     CreateTopicError, DeleteError, GetTopicError, ListSubscriptionsError, ListTopicsError,
     PublishMessagesError,

@@ -824,11 +824,15 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
     let dlq_msg = dlq_response.received_messages[0].message.clone().unwrap();
     let attrs = &dlq_msg.attributes;
     assert_eq!(
-        attrs.get("CloudPubSubDeadLetterSourceDeliveryCount").unwrap(),
+        attrs
+            .get("CloudPubSubDeadLetterSourceDeliveryCount")
+            .unwrap(),
         "5"
     );
     assert_eq!(
-        attrs.get("CloudPubSubDeadLetterSourceSubscription").unwrap(),
+        attrs
+            .get("CloudPubSubDeadLetterSourceSubscription")
+            .unwrap(),
         "dlq_nack_sub"
     );
     assert_eq!(

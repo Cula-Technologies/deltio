@@ -1,10 +1,10 @@
 mod api;
 mod collections;
-mod time;
 pub mod paging;
 pub mod pubsub_proto;
 pub mod push;
 pub mod subscriptions;
+mod time;
 pub mod topics;
 mod tracing;
 
@@ -16,11 +16,11 @@ use crate::topics::topic_manager::TopicManager;
 use api::publisher::PublisherService;
 use std::sync::Arc;
 use std::time::Duration;
-use tonic::transport::server::Router;
 use tonic::transport::Server;
+use tonic::transport::server::Router;
 
-use crate::push::push_loop::PushLoop;
 use crate::push::PushSubscriptionsRegistry;
+use crate::push::push_loop::PushLoop;
 #[cfg(not(all(target_arch = "x86", target_os = "linux")))]
 use mimalloc::MiMalloc;
 

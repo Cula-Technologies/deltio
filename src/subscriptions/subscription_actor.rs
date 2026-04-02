@@ -11,12 +11,12 @@ use crate::subscriptions::{
 };
 use crate::topics::topic_manager::TopicManager;
 use crate::topics::{MessageId, RemoveSubscriptionError, Topic, TopicMessage, TopicName};
-use futures::future::Shared;
 use futures::FutureExt;
+use futures::future::Shared;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::time::Instant;
 
 /// The max amount of messages that can be pulled.

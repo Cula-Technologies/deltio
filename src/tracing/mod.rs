@@ -1,5 +1,5 @@
-use log::log_enabled;
 use log::Level::Debug;
+use log::log_enabled;
 use std::fmt::{Display, Formatter};
 use tokio::time::Instant;
 

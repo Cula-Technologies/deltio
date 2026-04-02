@@ -17,8 +17,8 @@ use crate::subscriptions::{
     GetSubscriptionError, ListSubscriptionsError, ModifyDeadlineError, PullMessagesError,
     PulledMessage, SubscriptionInfo, SubscriptionName,
 };
-use crate::topics::topic_manager::TopicManager;
 use crate::topics::GetTopicError;
+use crate::topics::topic_manager::TopicManager;
 use crate::tracing::ActivitySpan;
 use futures::Stream;
 use std::pin::Pin;

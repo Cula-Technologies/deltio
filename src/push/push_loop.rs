@@ -75,7 +75,7 @@ pub async fn run(
                     // The subscription was likely deleted and haven't been cleaned up
                     // yet. We can safely ignore it.
                     Err(GetSubscriptionError::Closed | GetSubscriptionError::DoesNotExist) => {
-                        continue
+                        continue;
                     }
                 };
 

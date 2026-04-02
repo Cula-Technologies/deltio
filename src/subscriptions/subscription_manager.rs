@@ -5,8 +5,8 @@ use crate::subscriptions::*;
 use crate::topics::topic_manager::TopicManager;
 use crate::topics::{AttachSubscriptionError, GetTopicError, Topic};
 use parking_lot::RwLock;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 /// Provides an interface over the subscription manager actor.
@@ -125,7 +125,7 @@ impl SubscriptionManager {
             // It's fine that we'll be cloning the subscriptions here since
             // listing subscriptions is not a frequent operation.
             let state = self.state.read();
-            
+
             state
                 .subscriptions
                 .values()

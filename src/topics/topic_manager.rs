@@ -2,8 +2,8 @@ use crate::paging::Paging;
 use crate::topics::paging::TopicsPage;
 use crate::topics::*;
 use parking_lot::RwLock;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 /// Provides an interface over the topic manager actor.
@@ -69,7 +69,7 @@ impl TopicManager {
             // It's fine that we'll be cloning the topics here since
             // listing topics is not a frequent operation.
             let state = self.state.read();
-            
+
             state
                 .topics
                 .values()

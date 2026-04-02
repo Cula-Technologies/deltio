@@ -187,12 +187,12 @@ pub(crate) fn parse_dead_letter_policy(
         v if v < 5 => {
             return Err(Status::invalid_argument(
                 "max_delivery_attempts must be between 5 and 100",
-            ))
+            ));
         }
         v if v > 100 => {
             return Err(Status::invalid_argument(
                 "max_delivery_attempts must be between 5 and 100",
-            ))
+            ));
         }
         v => v,
     };

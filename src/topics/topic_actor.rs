@@ -1,12 +1,12 @@
 use crate::paging::Paging;
 use crate::subscriptions::paging::SubscriptionsPage;
 use crate::subscriptions::{PostMessagesError, Subscription, SubscriptionName};
+use crate::topics::TopicInfo;
 use crate::topics::errors::*;
 use crate::topics::topic_manager::TopicManagerDelegate;
 use crate::topics::topic_message::{MessageId, TopicMessage};
-use crate::topics::TopicInfo;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::{mpsc, oneshot};

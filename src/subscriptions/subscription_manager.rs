@@ -125,13 +125,13 @@ impl SubscriptionManager {
             // It's fine that we'll be cloning the subscriptions here since
             // listing subscriptions is not a frequent operation.
             let state = self.state.read();
-            let subscriptions = state
+            
+            state
                 .subscriptions
                 .values()
                 .filter(|t| t.name.is_in_project(&project_id))
                 .cloned()
-                .collect::<Vec<_>>();
-            subscriptions
+                .collect::<Vec<_>>()
         };
 
         // We know that no subscriptions are considered equal because

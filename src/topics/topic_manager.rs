@@ -69,13 +69,13 @@ impl TopicManager {
             // It's fine that we'll be cloning the topics here since
             // listing topics is not a frequent operation.
             let state = self.state.read();
-            let topics = state
+            
+            state
                 .topics
                 .values()
                 .filter(|t| t.name.is_in_project(&project_id))
                 .cloned()
-                .collect::<Vec<_>>();
-            topics
+                .collect::<Vec<_>>()
         };
 
         // We know that no topics are considered equal because

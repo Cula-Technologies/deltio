@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::Sender;
+use tokio::time::timeout;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::{Channel, Endpoint};
 use tonic::Streaming;
@@ -132,7 +133,10 @@ impl TestHost {
     /// Disposes the test host and waits for it to terminate.
     pub async fn dispose(self) {
         self.shutdown_send.send(()).unwrap();
-        self.join_handle.await.unwrap();
+        timeout(Duration::from_secs(5), self.join_handle)
+            .await
+            .expect("timed out waiting for shutdown, ensure all streaming pulls are dropped before disposing the test host")
+            .expect("server failed to shutdown");
         let _ = tokio::fs::remove_file(self.sock_file).await;
     }
 

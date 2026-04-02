@@ -331,13 +331,13 @@ impl SubscriptionActor {
         Ok(stats)
     }
 
-    /// Handles expired messages by requeueing them (with retry backoff if configured).
+    /// Handles expired messages by re-queueing them (with retry backoff if configured).
     async fn handle_expired_messages(&mut self, expired: Vec<PulledMessage>) {
         log::debug!("{}: {} messages expired", &self.info.name, expired.len());
         self.requeue_messages(expired).await;
     }
 
-    /// Requeues messages after a nack or deadline expiry, applying retry backoff if configured.
+    /// Re-queues messages after a nack or deadline expiry, applying retry backoff if configured.
     /// If a dead letter policy is configured and the max delivery attempts have been exceeded,
     /// the message is forwarded to the dead letter topic instead.
     async fn requeue_messages(&mut self, messages: Vec<PulledMessage>) {
@@ -377,40 +377,9 @@ impl SubscriptionActor {
             }
         }
 
-        // Publish dead-lettered messages to the DLQ topic.
+        // Publish dead-lettered messages to the DLQ topic if configured.
         if !dead_letter_messages.is_empty() {
-            if let Some(ref topic_manager) = self.topic_manager {
-                let dlp = self.info.dead_letter_policy.as_ref().unwrap();
-                match topic_manager.get_topic(&dlp.dead_letter_topic) {
-                    Ok(dlq_topic) => {
-                        let count = dead_letter_messages.len();
-                        if let Err(e) = dlq_topic.publish_messages(dead_letter_messages).await {
-                            log::warn!(
-                                "{}: failed to publish {} messages to dead letter topic {}: {}",
-                                &self.info.name,
-                                count,
-                                &dlp.dead_letter_topic,
-                                e
-                            );
-                        } else {
-                            log::debug!(
-                                "{}: dead-lettered {} messages to {}",
-                                &self.info.name,
-                                count,
-                                &dlp.dead_letter_topic
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        log::warn!(
-                            "{}: dead letter topic {} no longer exists, dropping {} messages",
-                            &self.info.name,
-                            &dlp.dead_letter_topic,
-                            dead_letter_messages.len()
-                        );
-                    }
-                }
-            }
+            self.try_publish_dead_lettered_messages(dead_letter_messages);
 
             // Clean up delivery attempts for dead-lettered messages.
             for id in &dead_letter_message_ids {
@@ -420,6 +389,46 @@ impl SubscriptionActor {
 
         if !self.backlog.is_empty() {
             self.observer.notify_new_messages_available();
+        }
+    }
+
+    fn try_publish_dead_lettered_messages(&mut self, dead_letter_messages: Vec<TopicMessage>) {
+        if let (Some(ref topic_manager), Some(ref dlp)) =
+            (&self.topic_manager, &self.info.dead_letter_policy)
+        {
+            match topic_manager.get_topic(&dlp.dead_letter_topic) {
+                Ok(dlq_topic) => {
+                    let count = dead_letter_messages.len();
+                    let sub_name = self.info.name.clone();
+                    let dlq_topic_name = dlp.dead_letter_topic.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = dlq_topic.publish_messages(dead_letter_messages).await {
+                            log::warn!(
+                                "{}: failed to publish {} messages to dead letter topic {}: {}",
+                                &sub_name,
+                                count,
+                                &dlq_topic_name,
+                                e
+                            );
+                        } else {
+                            log::debug!(
+                                "{}: dead-lettered {} messages to {}",
+                                &sub_name,
+                                count,
+                                &dlq_topic_name
+                            );
+                        }
+                    });
+                }
+                Err(_) => {
+                    log::warn!(
+                        "{}: dead letter topic {} no longer exists, dropping {} messages",
+                        &self.info.name,
+                        &dlp.dead_letter_topic,
+                        dead_letter_messages.len()
+                    );
+                }
+            }
         }
     }
 
@@ -488,7 +497,7 @@ impl SubscriptionObserver {
     /// When new messages arrive, any waiters of the signal will be
     /// notified. The signal will be subscribed to immediately, so the time at which
     /// this method is called is important.
-    pub fn new_messages_available(&self) -> MessagesAvailable {
+    pub fn new_messages_available(&self) -> MessagesAvailable<'_> {
         MessagesAvailable::new(self.notify_messages_available.notified())
     }
 

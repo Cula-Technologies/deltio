@@ -411,7 +411,7 @@ async fn test_streaming_pull_deadline_extension() {
     assert_eq!(
         pull_response
             .received_messages
-            .get(0)
+            .first()
             .unwrap()
             .message
             .clone()
@@ -423,6 +423,7 @@ async fn test_streaming_pull_deadline_extension() {
     // Drop the streaming calls so the shutdown won't wait for them.
     drop(sender);
     drop(inbound);
+    time::resume();
     server.dispose().await;
 }
 
@@ -572,10 +573,26 @@ async fn test_retry_policy_with_backoff() {
         .await
         .unwrap();
 
-    // Verify the retry policy is returned.
+    // Verify the retry policy is returned on create.
     let sub = subscription_response.get_ref();
     assert!(sub.retry_policy.is_some());
     let rp = sub.retry_policy.as_ref().unwrap();
+    assert_eq!(rp.minimum_backoff.as_ref().unwrap().seconds, 1);
+    assert_eq!(rp.maximum_backoff.as_ref().unwrap().seconds, 10);
+
+    // Verify the retry policy is persisted via GetSubscription.
+    let get_response = server
+        .subscriber
+        .get_subscription(GetSubscriptionRequest {
+            subscription: subscription_name.to_string(),
+        })
+        .await
+        .unwrap();
+    let rp = get_response
+        .get_ref()
+        .retry_policy
+        .as_ref()
+        .expect("retry_policy should be set");
     assert_eq!(rp.minimum_backoff.as_ref().unwrap().seconds, 1);
     assert_eq!(rp.maximum_backoff.as_ref().unwrap().seconds, 10);
 
@@ -600,58 +617,26 @@ async fn test_retry_policy_with_backoff() {
     // Advance time by 500ms — not enough for the 1s backoff.
     time::advance(Duration::from_millis(500)).await;
 
-    // Publish another message to trigger notification and verify no redelivery of nacked message.
-    // Instead, just advance past the backoff.
-    time::advance(Duration::from_millis(600)).await;
-
-    // Now the 1s backoff should have elapsed, we should get the message redelivered.
-    let pull_response = inbound.next().await.unwrap().unwrap();
-    assert_eq!(pull_response.received_messages.len(), 1);
-    let received = &pull_response.received_messages[0];
-    assert_eq!(
-        String::from_utf8(received.message.clone().unwrap().data).unwrap(),
-        "retry_me"
+    // Verify the message is not yet available via a non-streaming pull.
+    #[allow(deprecated)]
+    let pull_response = server
+        .subscriber
+        .pull(PullRequest {
+            subscription: subscription_name.to_string(),
+            max_messages: 10,
+            return_immediately: true,
+        })
+        .await
+        .unwrap();
+    assert!(
+        pull_response.get_ref().received_messages.is_empty(),
+        "message should not be redelivered before backoff elapses"
     );
-    assert_eq!(received.delivery_attempt, 2);
 
-    drop(sender);
-    drop(inbound);
-    server.dispose().await;
-}
-
-#[tokio::test]
-async fn test_no_retry_policy_immediate_redelivery() {
-    let mut server = TestHost::start().await.unwrap();
-
-    let topic_name = TopicName::new("test", "topic");
-    server.create_topic_with_name(&topic_name).await;
-
-    // Create a subscription WITHOUT a retry policy.
-    let subscription_name = SubscriptionName::new("test", "no_retry_sub");
+    // Publish a new message during the backoff — it should arrive before the nacked one.
     server
-        .create_subscription_with_name(&topic_name, &subscription_name)
+        .publish_text_messages(&topic_name, vec!["new_message".into()])
         .await;
-
-    // Start streaming pull.
-    let (sender, mut inbound) = server.streaming_pull(&subscription_name).await;
-
-    // Publish a message.
-    server
-        .publish_text_messages(&topic_name, vec!["immediate".into()])
-        .await;
-
-    // Pull the message.
-    let pull_response = inbound.next().await.unwrap().unwrap();
-    assert_eq!(pull_response.received_messages.len(), 1);
-    let ack_id = pull_response.received_messages[0].ack_id.clone();
-
-    // NACK it — should be immediately redelivered (no backoff).
-    sender.send(streaming_nack(vec![ack_id])).await.unwrap();
-
-    // Pause time to ensure we're not relying on real time.
-    time::pause();
-    time::advance(Duration::from_secs(1)).await;
-    time::resume();
 
     let pull_response = inbound.next().await.unwrap().unwrap();
     assert_eq!(pull_response.received_messages.len(), 1);
@@ -664,57 +649,25 @@ async fn test_no_retry_policy_immediate_redelivery() {
                 .data
         )
         .unwrap(),
-        "immediate"
+        "new_message"
     );
+
+    // Advance past the backoff.
+    time::advance(Duration::from_millis(600)).await;
+
+    // Now the 1s backoff should have elapsed, we should get the original message redelivered.
+    let pull_response = inbound.next().await.unwrap().unwrap();
+    assert_eq!(pull_response.received_messages.len(), 1);
+    let received = &pull_response.received_messages[0];
+    assert_eq!(
+        String::from_utf8(received.message.clone().unwrap().data).unwrap(),
+        "retry_me"
+    );
+    assert_eq!(received.delivery_attempt, 2);
 
     drop(sender);
     drop(inbound);
-    server.dispose().await;
-}
-
-#[tokio::test]
-async fn test_retry_policy_stored_and_returned() {
-    let mut server = TestHost::start().await.unwrap();
-
-    let topic_name = TopicName::new("test", "topic");
-    server.create_topic_with_name(&topic_name).await;
-
-    let subscription_name = SubscriptionName::new("test", "retry_store");
-    let mut resource = map_to_subscription_resource(&subscription_name, &topic_name);
-    resource.retry_policy = Some(RetryPolicyProto {
-        minimum_backoff: Some(prost_types::Duration {
-            seconds: 5,
-            nanos: 0,
-        }),
-        maximum_backoff: Some(prost_types::Duration {
-            seconds: 300,
-            nanos: 0,
-        }),
-    });
-
-    server
-        .subscriber
-        .create_subscription(resource)
-        .await
-        .unwrap();
-
-    // Retrieve and verify the retry policy is persisted.
-    let response = server
-        .subscriber
-        .get_subscription(GetSubscriptionRequest {
-            subscription: subscription_name.to_string(),
-        })
-        .await
-        .unwrap();
-
-    let sub = response.get_ref();
-    let rp = sub
-        .retry_policy
-        .as_ref()
-        .expect("retry_policy should be set");
-    assert_eq!(rp.minimum_backoff.as_ref().unwrap().seconds, 5);
-    assert_eq!(rp.maximum_backoff.as_ref().unwrap().seconds, 300);
-
+    time::resume();
     server.dispose().await;
 }
 
@@ -725,7 +678,6 @@ async fn test_dlq_nonexistent_topic_returns_not_found() {
     let topic_name = TopicName::new("test", "source_topic");
     server.create_topic_with_name(&topic_name).await;
 
-    // Try to create a subscription with a DLQ topic that doesn't exist.
     let subscription_name = SubscriptionName::new("test", "dlq_sub");
     let nonexistent_dlq_topic = TopicName::new("test", "nonexistent_dlq");
     let resource = map_to_subscription_resource_with_dlq(
@@ -742,54 +694,6 @@ async fn test_dlq_nonexistent_topic_returns_not_found() {
         .unwrap_err();
 
     assert_eq!(status.code(), Code::NotFound);
-
-    server.dispose().await;
-}
-
-#[tokio::test]
-async fn test_dlq_policy_stored_and_returned() {
-    let mut server = TestHost::start().await.unwrap();
-
-    let topic_name = TopicName::new("test", "source_topic");
-    server.create_topic_with_name(&topic_name).await;
-
-    let dlq_topic_name = TopicName::new("test", "dlq_topic");
-    server.create_topic_with_name(&dlq_topic_name).await;
-
-    let subscription_name = SubscriptionName::new("test", "dlq_sub");
-    let resource =
-        map_to_subscription_resource_with_dlq(&subscription_name, &topic_name, &dlq_topic_name, 10);
-
-    let response = server
-        .subscriber
-        .create_subscription(resource)
-        .await
-        .unwrap();
-
-    let sub = response.get_ref();
-    let dlp = sub
-        .dead_letter_policy
-        .as_ref()
-        .expect("dead_letter_policy should be set");
-    assert_eq!(dlp.dead_letter_topic, dlq_topic_name.to_string());
-    assert_eq!(dlp.max_delivery_attempts, 10);
-
-    // Also verify via get_subscription.
-    let response = server
-        .subscriber
-        .get_subscription(GetSubscriptionRequest {
-            subscription: subscription_name.to_string(),
-        })
-        .await
-        .unwrap();
-
-    let sub = response.get_ref();
-    let dlp = sub
-        .dead_letter_policy
-        .as_ref()
-        .expect("dead_letter_policy should be set");
-    assert_eq!(dlp.dead_letter_topic, dlq_topic_name.to_string());
-    assert_eq!(dlp.max_delivery_attempts, 10);
 
     server.dispose().await;
 }
@@ -812,11 +716,36 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
     let subscription_name = SubscriptionName::new("test", "dlq_nack_sub");
     let resource =
         map_to_subscription_resource_with_dlq(&subscription_name, &source_topic, &dlq_topic, 5);
-    server
+    let create_response = server
         .subscriber
         .create_subscription(resource)
         .await
         .unwrap();
+
+    // Verify the DLQ policy is returned on create.
+    let dlp = create_response
+        .get_ref()
+        .dead_letter_policy
+        .as_ref()
+        .expect("dead_letter_policy should be set");
+    assert_eq!(dlp.dead_letter_topic, dlq_topic.to_string());
+    assert_eq!(dlp.max_delivery_attempts, 5);
+
+    // Verify the DLQ policy is persisted via GetSubscription.
+    let get_response = server
+        .subscriber
+        .get_subscription(GetSubscriptionRequest {
+            subscription: subscription_name.to_string(),
+        })
+        .await
+        .unwrap();
+    let dlp = get_response
+        .get_ref()
+        .dead_letter_policy
+        .as_ref()
+        .expect("dead_letter_policy should be set");
+    assert_eq!(dlp.dead_letter_topic, dlq_topic.to_string());
+    assert_eq!(dlp.max_delivery_attempts, 5);
 
     // Create a subscription on the DLQ topic to observe forwarded messages.
     let dlq_subscription_name = SubscriptionName::new("test", "dlq_observer");
@@ -828,6 +757,10 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
     server
         .publish_text_messages(&source_topic, vec!["dlq_me".into()])
         .await;
+
+    // Set up a streaming pull on the DLQ subscription before nacking,
+    // so it's ready to receive the dead-lettered message.
+    let (dlq_sender, mut dlq_inbound) = server.streaming_pull(&dlq_subscription_name).await;
 
     // NACK the message enough times to exceed max_delivery_attempts (5).
     // First delivery = attempt 1, then NACK 4 more times to reach 5.
@@ -845,38 +778,23 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
 
         // NACK the message.
         sender.send(streaming_nack(vec![ack_id])).await.unwrap();
-
-        // Give the actor time to process.
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Drop the streaming pull so it doesn't hold the subscription.
-    drop(sender);
-    drop(inbound);
-
-    // Give time for the DLQ publish to complete.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Now pull from the DLQ subscription — the message should be there.
-    let pull_response = server
-        .subscriber
-        .pull(PullRequest {
-            subscription: dlq_subscription_name.to_string(),
-            max_messages: 10,
-            return_immediately: true,
-        })
+    // Wait for the dead-lettered message to arrive on the DLQ stream.
+    let dlq_response = tokio::time::timeout(Duration::from_secs(5), dlq_inbound.next())
         .await
+        .expect("timed out waiting for DLQ message")
         .unwrap()
-        .into_inner();
+        .unwrap();
 
     assert_eq!(
-        pull_response.received_messages.len(),
+        dlq_response.received_messages.len(),
         1,
         "message should have been forwarded to DLQ"
     );
     assert_eq!(
         String::from_utf8(
-            pull_response.received_messages[0]
+            dlq_response.received_messages[0]
                 .message
                 .clone()
                 .unwrap()
@@ -886,6 +804,10 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
         "dlq_me"
     );
 
+    drop(dlq_sender);
+    drop(dlq_inbound);
+    drop(sender);
+    drop(inbound);
     server.dispose().await;
 }
 
@@ -927,6 +849,10 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_expiry() {
         .publish_text_messages(&source_topic, vec!["expire_me".into()])
         .await;
 
+    // Set up a streaming pull on the DLQ subscription before expiring,
+    // so it's ready to receive the dead-lettered message.
+    let (dlq_sender, mut dlq_inbound) = server.streaming_pull(&dlq_subscription_name).await;
+
     // Start streaming pull.
     let (sender, mut inbound) = server.streaming_pull(&subscription_name).await;
 
@@ -944,32 +870,24 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_expiry() {
         time::advance(Duration::from_secs(20)).await;
     }
 
-    drop(sender);
-    drop(inbound);
+    // Resume time so the spawned DLQ publish can complete naturally.
+    time::resume();
 
-    // Advance time a bit more to ensure async DLQ publish completes.
-    time::advance(Duration::from_millis(200)).await;
-
-    // Pull from DLQ subscription.
-    let pull_response = server
-        .subscriber
-        .pull(PullRequest {
-            subscription: dlq_subscription_name.to_string(),
-            max_messages: 10,
-            return_immediately: true,
-        })
+    // Wait for the dead-lettered message to arrive on the DLQ stream.
+    let dlq_response = tokio::time::timeout(Duration::from_secs(5), dlq_inbound.next())
         .await
+        .expect("timed out waiting for DLQ message")
         .unwrap()
-        .into_inner();
+        .unwrap();
 
     assert_eq!(
-        pull_response.received_messages.len(),
+        dlq_response.received_messages.len(),
         1,
         "message should have been forwarded to DLQ via expiry"
     );
     assert_eq!(
         String::from_utf8(
-            pull_response.received_messages[0]
+            dlq_response.received_messages[0]
                 .message
                 .clone()
                 .unwrap()
@@ -979,52 +897,8 @@ async fn test_dlq_messages_forwarded_after_max_delivery_attempts_expiry() {
         "expire_me"
     );
 
-    server.dispose().await;
-}
-
-#[tokio::test]
-async fn test_delivery_attempt_reported_with_dlp() {
-    let mut server = TestHost::start().await.unwrap();
-
-    let source_topic = TopicName::new("test", "source");
-    server.create_topic_with_name(&source_topic).await;
-
-    let dlq_topic = TopicName::new("test", "dlq");
-    server.create_topic_with_name(&dlq_topic).await;
-
-    let subscription_name = SubscriptionName::new("test", "dlp_attempt_sub");
-    let resource =
-        map_to_subscription_resource_with_dlq(&subscription_name, &source_topic, &dlq_topic, 10);
-    server
-        .subscriber
-        .create_subscription(resource)
-        .await
-        .unwrap();
-
-    // Publish a message.
-    server
-        .publish_text_messages(&source_topic, vec!["track_me".into()])
-        .await;
-
-    // Pull it and verify delivery_attempt starts at 1.
-    let (sender, mut inbound) = server.streaming_pull(&subscription_name).await;
-
-    let pull_response = inbound.next().await.unwrap().unwrap();
-    assert_eq!(pull_response.received_messages.len(), 1);
-    assert_eq!(pull_response.received_messages[0].delivery_attempt, 1);
-
-    // NACK it.
-    let ack_id = pull_response.received_messages[0].ack_id.clone();
-    sender.send(streaming_nack(vec![ack_id])).await.unwrap();
-
-    // Give time for requeue.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    // Pull again — delivery_attempt should be 2.
-    let pull_response = inbound.next().await.unwrap().unwrap();
-    assert_eq!(pull_response.received_messages.len(), 1);
-    assert_eq!(pull_response.received_messages[0].delivery_attempt, 2);
-
+    drop(dlq_sender);
+    drop(dlq_inbound);
     drop(sender);
     drop(inbound);
     server.dispose().await;

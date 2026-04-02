@@ -171,4 +171,32 @@ mod tests {
         let ready = queue.take_ready(&deadline_at(10).time());
         assert!(ready.is_empty());
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn poll_next_ready_sleeps_until_deadline() {
+        let mut queue = RetryQueue::new();
+
+        // Schedule a message 2 seconds from now.
+        let deliver_at = AckDeadline::new(&(Instant::now() + Duration::from_secs(2)));
+        queue.add(new_message(1), deliver_at);
+
+        // poll_next_ready should not resolve before the deadline.
+        let poll = queue.poll_next_ready();
+        tokio::pin!(poll);
+
+        // Advance 1s — not enough.
+        tokio::select! {
+            _ = &mut poll => panic!("poll_next_ready resolved too early"),
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+
+        // Advance past the deadline.
+        let ready = tokio::select! {
+            ready = &mut poll => ready.unwrap(),
+            _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("poll_next_ready did not resolve after deadline"),
+        };
+
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].data[0], 1);
+    }
 }

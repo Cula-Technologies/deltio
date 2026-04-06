@@ -1,7 +1,6 @@
 use crate::subscriptions::AckId;
 use crate::topics::TopicMessage;
-use lazy_static::lazy_static;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -22,10 +21,8 @@ pub struct PulledMessage {
     delivery_attempt: u16,
 }
 
-lazy_static! {
-    /// Used as a baseline to calculate durations in order to round.
-    static ref EPOCH: Instant = Instant::now();
-}
+/// Used as a baseline to calculate durations in order to round.
+static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// Represents the deadline by which a message should be acked before it is considered expired.
 ///
@@ -92,14 +89,14 @@ impl PulledMessage {
 impl AckDeadline {
     /// Creates a new `AckDeadline`.
     pub fn new(time: &Instant) -> Self {
-        // Round up to nearest 100th millisecond
-        static PRECISION_MICROS: u64 = 100_000;
+        // Round up to nearest 100ms boundary to batch expirations together.
+        const PRECISION_MICROS: u64 = 100_000;
 
         let duration_since_epoch = time.duration_since(*EPOCH);
         let time_in_micros = duration_since_epoch.as_micros() as u64;
-        let rounded_in_micros = time_in_micros % PRECISION_MICROS;
+        let rounded_micros = time_in_micros.div_ceil(PRECISION_MICROS) * PRECISION_MICROS;
         let rounded_time = EPOCH
-            .checked_add(Duration::from_micros(time_in_micros + rounded_in_micros))
+            .checked_add(Duration::from_micros(rounded_micros))
             .unwrap();
         Self { time: rounded_time }
     }

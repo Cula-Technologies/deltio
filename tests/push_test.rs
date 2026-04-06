@@ -1,4 +1,4 @@
-use crate::push_server::{decode_data, TestPushServer};
+use crate::push_server::{TestPushServer, decode_data};
 use deltio::pubsub_proto::Subscription;
 use deltio::pubsub_proto::{PullRequest, PushConfig};
 use deltio::subscriptions::SubscriptionName;

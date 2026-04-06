@@ -1,6 +1,6 @@
 use deltio::pubsub_proto::{
     DeleteSubscriptionRequest, GetSubscriptionRequest, ListSubscriptionsRequest, PublishRequest,
-    PubsubMessage, PullRequest, StreamingPullResponse,
+    PubsubMessage, PullRequest, RetryPolicy as RetryPolicyProto, StreamingPullResponse,
 };
 use deltio::subscriptions::SubscriptionName;
 use deltio::topics::TopicName;
@@ -391,7 +391,7 @@ async fn test_streaming_pull_deadline_extension() {
 
     let pull_response = inbound.next().await.unwrap().unwrap();
     assert_eq!(pull_response.received_messages.len(), 1);
-    let received = pull_response.received_messages.get(0).unwrap();
+    let received = pull_response.received_messages.first().unwrap();
     assert_eq!(
         received.message.clone().unwrap().message_id,
         initial_message1.message.unwrap().message_id
@@ -403,6 +403,11 @@ async fn test_streaming_pull_deadline_extension() {
         .await
         .unwrap();
 
+    // Ensure the scheduler processes whatever work was queued before we advance time.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+
     // Advance the remaining ~10 to receive the 2nd one again.
     time::advance(Duration::from_secs(10)).await;
 
@@ -411,7 +416,7 @@ async fn test_streaming_pull_deadline_extension() {
     assert_eq!(
         pull_response
             .received_messages
-            .get(0)
+            .first()
             .unwrap()
             .message
             .clone()
@@ -423,6 +428,7 @@ async fn test_streaming_pull_deadline_extension() {
     // Drop the streaming calls so the shutdown won't wait for them.
     drop(sender);
     drop(inbound);
+    time::resume();
     server.dispose().await;
 }
 
@@ -542,4 +548,399 @@ fn collect_text_messages(pull_response: &StreamingPullResponse) -> Vec<String> {
         .iter()
         .map(|m| String::from_utf8(m.message.clone().unwrap().data).unwrap())
         .collect::<Vec<_>>()
+}
+
+#[tokio::test]
+async fn test_retry_policy_with_backoff() {
+    time::pause();
+
+    let mut server = TestHost::start().await.unwrap();
+
+    let topic_name = TopicName::new("test", "topic");
+    server.create_topic_with_name(&topic_name).await;
+
+    // Create a subscription with a retry policy (1s min, 10s max backoff).
+    let subscription_name = SubscriptionName::new("test", "retry_sub");
+    let mut resource = map_to_subscription_resource(&subscription_name, &topic_name);
+    resource.retry_policy = Some(RetryPolicyProto {
+        minimum_backoff: Some(prost_types::Duration {
+            seconds: 1,
+            nanos: 0,
+        }),
+        maximum_backoff: Some(prost_types::Duration {
+            seconds: 10,
+            nanos: 0,
+        }),
+    });
+    let subscription_response = server
+        .subscriber
+        .create_subscription(resource)
+        .await
+        .unwrap();
+
+    // Verify the retry policy is returned on create.
+    let sub = subscription_response.get_ref();
+    assert!(sub.retry_policy.is_some());
+    let rp = sub.retry_policy.as_ref().unwrap();
+    assert_eq!(rp.minimum_backoff.as_ref().unwrap().seconds, 1);
+    assert_eq!(rp.maximum_backoff.as_ref().unwrap().seconds, 10);
+
+    // Verify the retry policy is persisted via GetSubscription.
+    let get_response = server
+        .subscriber
+        .get_subscription(GetSubscriptionRequest {
+            subscription: subscription_name.to_string(),
+        })
+        .await
+        .unwrap();
+    let rp = get_response
+        .get_ref()
+        .retry_policy
+        .as_ref()
+        .expect("retry_policy should be set");
+    assert_eq!(rp.minimum_backoff.as_ref().unwrap().seconds, 1);
+    assert_eq!(rp.maximum_backoff.as_ref().unwrap().seconds, 10);
+
+    // Start streaming pull.
+    let (sender, mut inbound) = server.streaming_pull(&subscription_name).await;
+
+    // Publish a message.
+    server
+        .publish_text_messages(&topic_name, vec!["retry_me".into()])
+        .await;
+
+    // Pull the message.
+    let pull_response = inbound.next().await.unwrap().unwrap();
+    assert_eq!(pull_response.received_messages.len(), 1);
+    let received = &pull_response.received_messages[0];
+    assert_eq!(received.delivery_attempt, 1);
+    let ack_id = received.ack_id.clone();
+
+    // NACK the message.
+    sender.send(streaming_nack(vec![ack_id])).await.unwrap();
+
+    // Advance time by 500ms — not enough for the 1s backoff.
+    time::advance(Duration::from_millis(500)).await;
+
+    // Verify the message is not yet available via a non-streaming pull.
+    #[allow(deprecated)]
+    let pull_response = server
+        .subscriber
+        .pull(PullRequest {
+            subscription: subscription_name.to_string(),
+            max_messages: 10,
+            return_immediately: true,
+        })
+        .await
+        .unwrap();
+    assert!(
+        pull_response.get_ref().received_messages.is_empty(),
+        "message should not be redelivered before backoff elapses"
+    );
+
+    // Publish a new message during the backoff — it should arrive before the nacked one.
+    server
+        .publish_text_messages(&topic_name, vec!["new_message".into()])
+        .await;
+
+    let pull_response = inbound.next().await.unwrap().unwrap();
+    assert_eq!(pull_response.received_messages.len(), 1);
+    assert_eq!(
+        String::from_utf8(
+            pull_response.received_messages[0]
+                .message
+                .clone()
+                .unwrap()
+                .data
+        )
+        .unwrap(),
+        "new_message"
+    );
+
+    // Advance past the backoff.
+    time::advance(Duration::from_millis(600)).await;
+
+    // Now the 1s backoff should have elapsed, we should get the original message redelivered.
+    let pull_response = inbound.next().await.unwrap().unwrap();
+    assert_eq!(pull_response.received_messages.len(), 1);
+    let received = &pull_response.received_messages[0];
+    assert_eq!(
+        String::from_utf8(received.message.clone().unwrap().data).unwrap(),
+        "retry_me"
+    );
+    assert_eq!(received.delivery_attempt, 2);
+
+    drop(sender);
+    drop(inbound);
+    time::resume();
+    server.dispose().await;
+}
+
+#[tokio::test]
+async fn test_dlq_nonexistent_topic_returns_not_found() {
+    let mut server = TestHost::start().await.unwrap();
+
+    let topic_name = TopicName::new("test", "source_topic");
+    server.create_topic_with_name(&topic_name).await;
+
+    let subscription_name = SubscriptionName::new("test", "dlq_sub");
+    let nonexistent_dlq_topic = TopicName::new("test", "nonexistent_dlq");
+    let resource = map_to_subscription_resource_with_dlq(
+        &subscription_name,
+        &topic_name,
+        &nonexistent_dlq_topic,
+        5,
+    );
+
+    let status = server
+        .subscriber
+        .create_subscription(resource)
+        .await
+        .unwrap_err();
+
+    assert_eq!(status.code(), Code::NotFound);
+
+    server.dispose().await;
+}
+
+// The `return_immediately` field is deprecated in the proto,
+// but we need to specify it.
+#[allow(deprecated)]
+#[tokio::test]
+async fn test_dlq_messages_forwarded_after_max_delivery_attempts_nack() {
+    let mut server = TestHost::start().await.unwrap();
+
+    // Create source topic and DLQ topic.
+    let source_topic = TopicName::new("test", "source");
+    server.create_topic_with_name(&source_topic).await;
+
+    let dlq_topic = TopicName::new("test", "dlq");
+    server.create_topic_with_name(&dlq_topic).await;
+
+    // Create a subscription on the source topic with DLQ (max 5 attempts).
+    let subscription_name = SubscriptionName::new("test", "dlq_nack_sub");
+    let resource =
+        map_to_subscription_resource_with_dlq(&subscription_name, &source_topic, &dlq_topic, 5);
+    let create_response = server
+        .subscriber
+        .create_subscription(resource)
+        .await
+        .unwrap();
+
+    // Verify the DLQ policy is returned on create.
+    let dlp = create_response
+        .get_ref()
+        .dead_letter_policy
+        .as_ref()
+        .expect("dead_letter_policy should be set");
+    assert_eq!(dlp.dead_letter_topic, dlq_topic.to_string());
+    assert_eq!(dlp.max_delivery_attempts, 5);
+
+    // Verify the DLQ policy is persisted via GetSubscription.
+    let get_response = server
+        .subscriber
+        .get_subscription(GetSubscriptionRequest {
+            subscription: subscription_name.to_string(),
+        })
+        .await
+        .unwrap();
+    let dlp = get_response
+        .get_ref()
+        .dead_letter_policy
+        .as_ref()
+        .expect("dead_letter_policy should be set");
+    assert_eq!(dlp.dead_letter_topic, dlq_topic.to_string());
+    assert_eq!(dlp.max_delivery_attempts, 5);
+
+    // Create a subscription on the DLQ topic to observe forwarded messages.
+    let dlq_subscription_name = SubscriptionName::new("test", "dlq_observer");
+    server
+        .create_subscription_with_name(&dlq_topic, &dlq_subscription_name)
+        .await;
+
+    // Publish a message to the source topic with a user attribute.
+    server
+        .publisher
+        .publish(PublishRequest {
+            topic: source_topic.to_string(),
+            messages: vec![PubsubMessage {
+                data: "dlq_me".into(),
+                attributes: [("user-attr".to_string(), "user-value".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            }],
+        })
+        .await
+        .unwrap();
+
+    // Set up a streaming pull on the DLQ subscription before nacking,
+    // so it's ready to receive the dead-lettered message.
+    let (dlq_sender, mut dlq_inbound) = server.streaming_pull(&dlq_subscription_name).await;
+
+    // NACK the message for all 5 delivery attempts. After the 5th nack,
+    // the message should be dead-lettered.
+    let (sender, mut inbound) = server.streaming_pull(&subscription_name).await;
+
+    for i in 1..6 {
+        let pull_response = inbound.next().await.unwrap().unwrap();
+        assert_eq!(pull_response.received_messages.len(), 1);
+        assert_eq!(
+            pull_response.received_messages[0].delivery_attempt, i,
+            "delivery_attempt should be {}",
+            i,
+        );
+        let ack_id = pull_response.received_messages[0].ack_id.clone();
+
+        // NACK the message.
+        sender.send(streaming_nack(vec![ack_id])).await.unwrap();
+    }
+
+    // Wait for the dead-lettered message to arrive on the DLQ stream.
+    let dlq_response = tokio::time::timeout(Duration::from_secs(5), dlq_inbound.next())
+        .await
+        .expect("timed out waiting for DLQ message")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        dlq_response.received_messages.len(),
+        1,
+        "message should have been forwarded to DLQ"
+    );
+    assert_eq!(
+        String::from_utf8(
+            dlq_response.received_messages[0]
+                .message
+                .clone()
+                .unwrap()
+                .data
+        )
+        .unwrap(),
+        "dlq_me"
+    );
+
+    // Verify dead-letter attributes.
+    let dlq_msg = dlq_response.received_messages[0].message.clone().unwrap();
+    let attrs = &dlq_msg.attributes;
+    assert_eq!(
+        attrs
+            .get("CloudPubSubDeadLetterSourceDeliveryCount")
+            .unwrap(),
+        "5"
+    );
+    assert_eq!(
+        attrs
+            .get("CloudPubSubDeadLetterSourceSubscription")
+            .unwrap(),
+        "dlq_nack_sub"
+    );
+    assert_eq!(
+        attrs
+            .get("CloudPubSubDeadLetterSourceSubscriptionProject")
+            .unwrap(),
+        "test"
+    );
+    assert!(attrs.contains_key("CloudPubSubDeadLetterSourceTopicPublishTime"));
+    // Verify the original user attribute was preserved.
+    assert_eq!(attrs.get("user-attr").unwrap(), "user-value");
+
+    drop(dlq_sender);
+    drop(dlq_inbound);
+    drop(sender);
+    drop(inbound);
+    server.dispose().await;
+}
+
+// The `return_immediately` field is deprecated in the proto,
+// but we need to specify it.
+#[allow(deprecated)]
+#[tokio::test]
+async fn test_dlq_messages_forwarded_after_max_delivery_attempts_expiry() {
+    time::pause();
+
+    let mut server = TestHost::start().await.unwrap();
+
+    // Create source topic and DLQ topic.
+    let source_topic = TopicName::new("test", "source");
+    server.create_topic_with_name(&source_topic).await;
+
+    let dlq_topic = TopicName::new("test", "dlq");
+    server.create_topic_with_name(&dlq_topic).await;
+
+    // Create a subscription with DLQ (max 5 attempts) and short ACK deadline.
+    let subscription_name = SubscriptionName::new("test", "dlq_expiry_sub");
+    let mut resource =
+        map_to_subscription_resource_with_dlq(&subscription_name, &source_topic, &dlq_topic, 5);
+    resource.ack_deadline_seconds = 10;
+    server
+        .subscriber
+        .create_subscription(resource)
+        .await
+        .unwrap();
+
+    // Create a subscription on the DLQ topic.
+    let dlq_subscription_name = SubscriptionName::new("test", "dlq_observer");
+    server
+        .create_subscription_with_name(&dlq_topic, &dlq_subscription_name)
+        .await;
+
+    // Publish a message.
+    server
+        .publish_text_messages(&source_topic, vec!["expire_me".into()])
+        .await;
+
+    // Set up a streaming pull on the DLQ subscription before expiring,
+    // so it's ready to receive the dead-lettered message.
+    let (dlq_sender, mut dlq_inbound) = server.streaming_pull(&dlq_subscription_name).await;
+
+    // Start streaming pull.
+    let (sender, mut inbound) = server.streaming_pull(&subscription_name).await;
+
+    // Pull the message, don't ACK it, let it expire for all 5 delivery attempts.
+    for i in 1..6 {
+        let pull_response = inbound.next().await.unwrap().unwrap();
+        assert_eq!(pull_response.received_messages.len(), 1);
+        assert_eq!(
+            pull_response.received_messages[0].delivery_attempt, i,
+            "delivery_attempt should be {}",
+            i,
+        );
+
+        // Don't ACK — let the deadline expire.
+        time::advance(Duration::from_secs(20)).await;
+    }
+
+    // Resume time so the spawned DLQ publish can complete naturally.
+    time::resume();
+
+    // Wait for the dead-lettered message to arrive on the DLQ stream.
+    let dlq_response = tokio::time::timeout(Duration::from_secs(5), dlq_inbound.next())
+        .await
+        .expect("timed out waiting for DLQ message")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        dlq_response.received_messages.len(),
+        1,
+        "message should have been forwarded to DLQ via expiry"
+    );
+    assert_eq!(
+        String::from_utf8(
+            dlq_response.received_messages[0]
+                .message
+                .clone()
+                .unwrap()
+                .data
+        )
+        .unwrap(),
+        "expire_me"
+    );
+
+    drop(dlq_sender);
+    drop(dlq_inbound);
+    drop(sender);
+    drop(inbound);
+    server.dispose().await;
 }

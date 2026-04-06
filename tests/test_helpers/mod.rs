@@ -1,21 +1,23 @@
+use deltio::Deltio;
 use deltio::pubsub_proto::publisher_client::PublisherClient;
 use deltio::pubsub_proto::subscriber_client::SubscriberClient;
 use deltio::pubsub_proto::{
-    AcknowledgeRequest, ModifyAckDeadlineRequest, PublishRequest, PubsubMessage,
-    StreamingPullRequest, StreamingPullResponse, Subscription, Topic,
+    AcknowledgeRequest, DeadLetterPolicy as DeadLetterPolicyProto, ModifyAckDeadlineRequest,
+    PublishRequest, PubsubMessage, StreamingPullRequest, StreamingPullResponse, Subscription,
+    Topic,
 };
 use deltio::subscriptions::SubscriptionName;
 use deltio::topics::TopicName;
-use deltio::Deltio;
 use futures::FutureExt;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::Sender;
+use tokio::time::timeout;
 use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::{Channel, Endpoint};
 use tonic::Streaming;
+use tonic::transport::{Channel, Endpoint};
 use tower::service_fn;
 use uuid::Uuid;
 
@@ -84,7 +86,7 @@ impl TestHost {
         };
 
         // Future for running the push loop.
-        let push_loop = app.push_loop(Duration::from_secs(1));
+        let push_loop = app.push_loop(Duration::from_secs(1), 10);
         let push_loop_fut = async move {
             tokio::select! {
                 _ = push_loop.run() => {},
@@ -131,7 +133,10 @@ impl TestHost {
     /// Disposes the test host and waits for it to terminate.
     pub async fn dispose(self) {
         self.shutdown_send.send(()).unwrap();
-        self.join_handle.await.unwrap();
+        timeout(Duration::from_secs(5), self.join_handle)
+            .await
+            .expect("timed out waiting for shutdown, ensure all streaming pulls are dropped before disposing the test host")
+            .expect("server failed to shutdown");
         let _ = tokio::fs::remove_file(self.sock_file).await;
     }
 
@@ -291,6 +296,21 @@ pub fn map_to_subscription_resource(
         topic_message_retention_duration: None,
         state: 0,
     }
+}
+
+/// Maps the given parameters to a `Subscription` resource with a dead letter policy.
+pub fn map_to_subscription_resource_with_dlq(
+    subscription_name: &SubscriptionName,
+    topic_name: &TopicName,
+    dead_letter_topic_name: &TopicName,
+    max_delivery_attempts: i32,
+) -> Subscription {
+    let mut resource = map_to_subscription_resource(subscription_name, topic_name);
+    resource.dead_letter_policy = Some(DeadLetterPolicyProto {
+        dead_letter_topic: dead_letter_topic_name.to_string(),
+        max_delivery_attempts,
+    });
+    resource
 }
 
 /// Constructs a streaming ACK request.

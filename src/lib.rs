@@ -4,6 +4,7 @@ pub mod paging;
 pub mod pubsub_proto;
 pub mod push;
 pub mod subscriptions;
+mod time;
 pub mod topics;
 mod tracing;
 
@@ -15,11 +16,11 @@ use crate::topics::topic_manager::TopicManager;
 use api::publisher::PublisherService;
 use std::sync::Arc;
 use std::time::Duration;
-use tonic::transport::server::Router;
 use tonic::transport::Server;
+use tonic::transport::server::Router;
 
-use crate::push::push_loop::PushLoop;
 use crate::push::PushSubscriptionsRegistry;
+use crate::push::push_loop::PushLoop;
 #[cfg(not(all(target_arch = "x86", target_os = "linux")))]
 use mimalloc::MiMalloc;
 
@@ -47,10 +48,14 @@ impl Deltio {
     /// Creates a new Deltio components wrapper.
     pub fn new() -> Self {
         let push_subscriptions_registry = PushSubscriptionsRegistry::new();
+        let topic_manager = Arc::new(TopicManager::new());
         Self {
             push_subscriptions_registry: push_subscriptions_registry.clone(),
-            topic_manager: Arc::new(TopicManager::new()),
-            subscription_manager: Arc::new(SubscriptionManager::new(push_subscriptions_registry)),
+            topic_manager: Arc::clone(&topic_manager),
+            subscription_manager: Arc::new(SubscriptionManager::new(
+                push_subscriptions_registry,
+                topic_manager,
+            )),
         }
     }
 
@@ -69,9 +74,10 @@ impl Deltio {
     }
 
     /// Creates the push loop.
-    pub fn push_loop(&self, interval: Duration) -> PushLoop {
+    pub fn push_loop(&self, interval: Duration, max_concurrency: usize) -> PushLoop {
         PushLoop::new(
             interval,
+            max_concurrency,
             Arc::clone(&self.subscription_manager),
             self.push_subscriptions_registry.clone(),
         )

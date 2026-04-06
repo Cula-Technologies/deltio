@@ -52,36 +52,32 @@ To see a list of options:
 $ deltio --help
 ```
 
-# Limitations
+# Supported Features
 
-As of this time, Deltio has **very limited functionality**, much less than the official Google Cloud Pub/Sub emulator.
+Deltio implements the core Pub/Sub API surface needed for local development and CI testing. Everything is in-memory — there is no persistence.
 
-**Currently supported features:**
+**Topics:**
 
-* Create topic
-  * Only the `name` property is respected
-* Get topic
-* List topics in a project
-* Publish messages
-  * Only the `data` and `attributes` properties are respected
-* Delete topics
-* Create subscription
-  * Supports `name` and `ack_deadline_seconds` properties
-* Get subscription
-* List subscriptions in a project
-* List subscription names in a topic
+* Create, get, list, and delete topics
+* Publish messages (with `data` and `attributes`)
+* List subscriptions attached to a topic
+
+**Subscriptions:**
+
+* Create, get, list, and delete subscriptions
+* `ack_deadline_seconds` configuration
+* Pull and streaming pull
+  * Streaming pull handles inline acks and deadline modifications
+* Acknowledge messages
 * Modify ACK deadlines
-* ACK messages
-* Pull messages
-* Streaming-pull messages
-  * Including handling stream requests for acks and deadline modifications
-  * Does **NOT** support flow control properties
+* Message expiration and redelivery
 * Push subscriptions
-  * No flow control
-* Message expiration
-* Deleting subscriptions
+* Retry policy with exponential backoff
+* Dead letter policy (messages exceeding max delivery attempts are forwarded to a dead letter topic)
 
-If something is not listed above, it's probably not supported yet. For example: message ordering, exactly-once delivery, deadletter and expiration policies, are not supported.
+**Not supported:**
+
+Message ordering, exactly-once delivery, schemas, snapshots, seek, and topic/subscription updates are not implemented.
 
 # Compiling from source
 

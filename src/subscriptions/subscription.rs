@@ -1,6 +1,7 @@
 use crate::push::PushSubscriptionsRegistry;
 use crate::subscriptions::errors::*;
 use crate::subscriptions::futures::{Deleted, MessagesAvailable};
+use crate::subscriptions::policies::{DeadLetterPolicy, RetryPolicy};
 use crate::subscriptions::subscription_actor::{
     SubscriptionActor, SubscriptionObserver, SubscriptionRequest,
 };
@@ -8,6 +9,7 @@ use crate::subscriptions::subscription_manager::SubscriptionManagerDelegate;
 use crate::subscriptions::{
     AckId, DeadlineModification, PulledMessage, SubscriptionName, SubscriptionStats,
 };
+use crate::topics::topic_manager::TopicManager;
 use crate::topics::{Topic, TopicMessage};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -44,6 +46,12 @@ pub struct SubscriptionInfo {
 
     /// If specified, pushes messages to the configured endpoint.
     pub push_config: Option<PushConfig>,
+
+    /// If specified, controls redelivery backoff after nacks/deadline expiry.
+    pub retry_policy: Option<RetryPolicy>,
+
+    /// If specified, messages exceeding max delivery attempts are forwarded to a dead letter topic.
+    pub dead_letter_policy: Option<DeadLetterPolicy>,
 }
 
 /// Configuration for push subscriptions.
@@ -73,6 +81,7 @@ impl Subscription {
         topic: Arc<Topic>,
         push_registry: PushSubscriptionsRegistry,
         delegate: SubscriptionManagerDelegate,
+        topic_manager: Option<Arc<TopicManager>>,
     ) -> Self {
         let observer = Arc::new(SubscriptionObserver::new());
 
@@ -85,6 +94,7 @@ impl Subscription {
             Arc::clone(&observer),
             push_registry,
             delegate,
+            topic_manager,
         );
         let topic = Arc::downgrade(&topic);
         Self {
@@ -100,7 +110,7 @@ impl Subscription {
     /// When new messages arrive, any waiters of the signal will be
     /// notified. The signal will be subscribed to immediately, so the time at which
     /// this method is called is important.
-    pub fn messages_available(&self) -> MessagesAvailable {
+    pub fn messages_available(&self) -> MessagesAvailable<'_> {
         self.observer.new_messages_available()
     }
 
@@ -140,7 +150,7 @@ impl Subscription {
     /// This does not wait for the message to be processed.
     pub async fn post_messages(
         &self,
-        new_messages: Vec<Arc<TopicMessage>>,
+        new_messages: Arc<[Arc<TopicMessage>]>,
     ) -> Result<(), PostMessagesError> {
         self.sender
             .send(SubscriptionRequest::PostMessages {
@@ -228,11 +238,15 @@ impl SubscriptionInfo {
         name: SubscriptionName,
         ack_deadline: Duration,
         push_config: Option<PushConfig>,
+        retry_policy: Option<RetryPolicy>,
+        dead_letter_policy: Option<DeadLetterPolicy>,
     ) -> Self {
         Self {
             name,
             ack_deadline,
             push_config,
+            retry_policy,
+            dead_letter_policy,
         }
     }
 
@@ -242,6 +256,8 @@ impl SubscriptionInfo {
             name,
             ack_deadline: Duration::from_secs(10),
             push_config: None,
+            retry_policy: None,
+            dead_letter_policy: None,
         }
     }
 }

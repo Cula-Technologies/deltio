@@ -1,6 +1,7 @@
 mod ack_id;
 mod deadline_modification;
 mod errors;
+pub mod filter;
 pub mod flow_control;
 pub mod futures;
 mod outstanding;
@@ -17,6 +18,7 @@ mod subscription_name;
 pub use ack_id::*;
 pub use deadline_modification::*;
 pub use errors::*;
+pub use filter::*;
 pub use policies::*;
 pub use pulled_message::*;
 pub use stats::*;

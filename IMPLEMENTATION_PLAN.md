@@ -44,14 +44,14 @@ correctly through Get/List.
 ## Stage B: `message_retention_duration` enforcement
 **Goal**: messages older than retention duration are evicted from backlog and outstanding.
 **Tests**: publish msg, fast-forward time past retention (using `tokio::time::pause`), assert message no longer pulled.
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage C: Server-side filter parser + evaluator
 **Goal**: `attributes.k = "v"`, `attributes.k != "v"`, `hasPrefix(attributes.k, "v")`,
 `AND/OR/NOT`, parens. Filter applied at pull time (skip non-matching, ack-drop them
 silently per Pub/Sub semantics).
 **Tests**: parse + eval unit tests for grammar; integration test of filter applied to streaming pull.
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage D: Streaming-pull `max_outstanding_messages` honor
 **Goal**: respect client's flow control limit from initial StreamingPullRequest. Don't

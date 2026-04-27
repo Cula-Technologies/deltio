@@ -6,7 +6,7 @@ use crate::subscriptions::outstanding::OutstandingMessageTracker;
 use crate::subscriptions::retry_queue::RetryQueue;
 use crate::subscriptions::subscription_manager::SubscriptionManagerDelegate;
 use crate::subscriptions::{
-    AckDeadline, AckId, AcknowledgeMessagesError, DeadlineModification, PulledMessage,
+    AckDeadline, AckId, AcknowledgeMessagesError, DeadlineModification, Filter, PulledMessage,
     SubscriptionInfo, SubscriptionStats, SubscriptionUpdate,
 };
 use crate::topics::topic_manager::TopicManager;
@@ -98,6 +98,10 @@ pub(crate) struct SubscriptionActor {
     /// The topic manager, used for publishing to the dead letter topic.
     /// Only `Some` when a dead letter policy is configured.
     topic_manager: Option<Arc<TopicManager>>,
+
+    /// Compiled filter, derived from `info.filter` at start time. Filters are immutable
+    /// post-create so this is computed once.
+    compiled_filter: Option<Filter>,
 }
 
 impl SubscriptionActor {
@@ -118,6 +122,20 @@ impl SubscriptionActor {
             push_registry.set(info.name.clone(), info.push_config.clone())
         }
 
+        // Filters are validated by the API layer before reaching the actor. If a malformed
+        // filter still slips through we drop it rather than refuse to start, since the actor
+        // start path is infallible.
+        let compiled_filter = info
+            .filter
+            .as_deref()
+            .and_then(|raw| match Filter::parse(raw) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    log::warn!("{}: ignoring malformed filter '{}': {}", &info.name, raw, e);
+                    None
+                }
+            });
+
         let mut actor = Self {
             internal_id,
             info,
@@ -132,6 +150,7 @@ impl SubscriptionActor {
             delivery_attempts: HashMap::new(),
             retry_queue: RetryQueue::new(),
             topic_manager,
+            compiled_filter,
         };
 
         tokio::spawn(async move {
@@ -218,13 +237,25 @@ impl SubscriptionActor {
         Ok(self.info.clone())
     }
 
-    /// Posts new messages to the subscription.
+    /// Posts new messages to the subscription. Messages that don't match the subscription's
+    /// filter are silently dropped here — they never reach the backlog.
     fn post_messages(&mut self, new_messages: Arc<[Arc<TopicMessage>]>) {
         if self.deleted {
             return;
         }
 
-        self.backlog.append(new_messages.iter().cloned());
+        let kept: Vec<Arc<TopicMessage>> = match &self.compiled_filter {
+            Some(f) => new_messages
+                .iter()
+                .filter(|m| f.matches(m.attributes.as_ref()))
+                .cloned()
+                .collect(),
+            None => new_messages.iter().cloned().collect(),
+        };
+        if kept.is_empty() {
+            return;
+        }
+        self.backlog.append(kept);
         self.observer.notify_new_messages_available();
     }
 

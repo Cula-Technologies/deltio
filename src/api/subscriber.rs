@@ -13,7 +13,7 @@ use crate::pubsub_proto::{
 };
 use crate::subscriptions::subscription_manager::SubscriptionManager;
 use crate::subscriptions::{
-    AcknowledgeMessagesError, CreateSubscriptionError, DeleteError, GetInfoError,
+    AcknowledgeMessagesError, CreateSubscriptionError, DeleteError, Filter, GetInfoError,
     GetSubscriptionError, ListSubscriptionsError, ModifyDeadlineError, PullMessagesError,
     PulledMessage, SubscriptionInfo, SubscriptionName,
 };
@@ -80,7 +80,14 @@ impl Subscriber for SubscriberService {
             .transpose()?;
         let filter = match request.filter.trim() {
             "" => None,
-            f => Some(f.to_string()),
+            f => {
+                // Validate the filter at create time so callers get a clear INVALID_ARGUMENT
+                // instead of silently mismatching messages later.
+                Filter::parse(f).map_err(|e| {
+                    Status::invalid_argument(format!("invalid filter expression: {}", e))
+                })?;
+                Some(f.to_string())
+            }
         };
         let mut subscription_info = SubscriptionInfo::new(
             subscription_name.clone(),

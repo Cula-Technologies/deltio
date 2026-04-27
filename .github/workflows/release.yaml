@@ -17,18 +17,20 @@ jobs:
     runs-on: ubuntu-latest
     # If this is a GitHub release, use the tag name as it represents
     # a release version, such as `v0.1.2`. The output would be `0.1.2`.
-    # For non-releases, use `edge`.
+    # For non-releases, use `edge`. The Cula fork additionally publishes a stable
+    # `cula-main` tag and a `cula-<short-sha>` tag for each push to `cula/main`,
+    # so cula-platform CI can pin to a specific build.
     outputs:
       tag: ${{ steps.compute.outputs.tag }}
       docker_tags: ${{ steps.compute.outputs.docker_tags }}
-      push: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
+      push: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/cula/main' }}
 
     steps:
       - name: "Compute Release Tag"
         id: compute
         run: |
           TAG="edge"
-          DOCKER_BASE="ghcr.io/jeffijoe/deltio"
+          DOCKER_BASE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/deltio"
           DOCKER_TAGS="$DOCKER_BASE:edge"
           if [[ "$GITHUB_REF" == "refs/tags/v"* ]]; then
             TAG="${GITHUB_REF_NAME:1}"
@@ -38,6 +40,15 @@ jobs:
           $DOCKER_BASE:$TAG
           EOF
           set -e
+          elif [[ "$GITHUB_REF" == "refs/heads/cula/main" ]]; then
+            SHORT_SHA="${GITHUB_SHA:0:7}"
+            TAG="cula-main"
+            set +e
+            read -r -d '' DOCKER_TAGS <<-EOF
+          $DOCKER_BASE:cula-main
+          $DOCKER_BASE:cula-$SHORT_SHA
+          EOF
+            set -e
           fi
           echo "Tag: $TAG"
           echo "Docker tags: $DOCKER_TAGS"

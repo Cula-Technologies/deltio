@@ -676,7 +676,7 @@ fn map_to_received_message(m: &PulledMessage) -> ReceivedMessage {
             let message = m.message();
             Some(PubsubMessage {
                 publish_time: Some(prost_types::Timestamp::from(message.published_at)),
-                ordering_key: String::default(),
+                ordering_key: message.ordering_key.clone().unwrap_or_default(),
                 message_id: message.id.to_string(),
                 data: message.data.to_vec(),
                 attributes: match &message.attributes {

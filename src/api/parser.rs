@@ -332,5 +332,9 @@ pub(crate) fn parse_topic_message(message_proto: PubsubMessage) -> TopicMessage 
         _ => Some(message_proto.attributes),
     };
 
-    TopicMessage::new(data, attributes)
+    let mut message = TopicMessage::new(data, attributes);
+    if !message_proto.ordering_key.is_empty() {
+        message.ordering_key = Some(message_proto.ordering_key);
+    }
+    message
 }

@@ -14,7 +14,7 @@ use crate::topics::{MessageId, RemoveSubscriptionError, Topic, TopicMessage, Top
 use futures::FutureExt;
 use futures::future::Shared;
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Weak};
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::time::Instant;
@@ -105,6 +105,14 @@ pub(crate) struct SubscriptionActor {
     /// Compiled filter, derived from `info.filter` at start time. Filters are immutable
     /// post-create so this is computed once.
     compiled_filter: Option<Filter>,
+
+    /// Per-`ordering_key` FIFO queues. Only populated when the subscription has
+    /// `enable_message_ordering`; otherwise keyed messages join `backlog` like everything else.
+    ordered_queues: HashMap<String, VecDeque<Arc<TopicMessage>>>,
+
+    /// Set of ordering keys whose head message is currently outstanding. While a key is
+    /// in this set, no further messages for that key may be delivered.
+    keys_in_flight: HashSet<String>,
 }
 
 impl SubscriptionActor {
@@ -154,6 +162,8 @@ impl SubscriptionActor {
             retry_queue: RetryQueue::new(),
             topic_manager,
             compiled_filter,
+            ordered_queues: HashMap::new(),
+            keys_in_flight: HashSet::new(),
         };
 
         tokio::spawn(async move {
@@ -242,25 +252,38 @@ impl SubscriptionActor {
     }
 
     /// Posts new messages to the subscription. Messages that don't match the subscription's
-    /// filter are silently dropped here — they never reach the backlog.
+    /// filter are silently dropped here — they never reach the backlog. When ordering is
+    /// enabled, keyed messages are routed to per-key queues so only the head of each key
+    /// can be pulled at any time.
     fn post_messages(&mut self, new_messages: Arc<[Arc<TopicMessage>]>) {
         if self.deleted {
             return;
         }
 
-        let kept: Vec<Arc<TopicMessage>> = match &self.compiled_filter {
-            Some(f) => new_messages
-                .iter()
-                .filter(|m| f.matches(m.attributes.as_ref()))
-                .cloned()
-                .collect(),
-            None => new_messages.iter().cloned().collect(),
-        };
-        if kept.is_empty() {
-            return;
+        let mut had_any = false;
+        for msg in new_messages.iter() {
+            if let Some(f) = &self.compiled_filter
+                && !f.matches(msg.attributes.as_ref())
+            {
+                continue;
+            }
+            match (&msg.ordering_key, self.info.enable_message_ordering) {
+                (Some(key), true) => {
+                    self.ordered_queues
+                        .entry(key.clone())
+                        .or_default()
+                        .push_back(Arc::clone(msg));
+                    had_any = true;
+                }
+                _ => {
+                    self.backlog.append(std::iter::once(Arc::clone(msg)));
+                    had_any = true;
+                }
+            }
         }
-        self.backlog.append(kept);
-        self.observer.notify_new_messages_available();
+        if had_any {
+            self.observer.notify_new_messages_available();
+        }
     }
 
     /// Pulls messages from the subscription, marking them as outstanding so they won't be
@@ -275,7 +298,12 @@ impl SubscriptionActor {
             return Ok(Default::default());
         }
 
-        let outgoing_len = self.backlog.len() as u16;
+        let pending_keyed = self
+            .ordered_queues
+            .iter()
+            .filter(|(k, q)| !self.keys_in_flight.contains(*k) && !q.is_empty())
+            .count() as u16;
+        let outgoing_len = (self.backlog.len() as u16).saturating_add(pending_keyed);
         let mut effective_max = max_count.clamp(0, outgoing_len.max(MAX_PULL_COUNT));
         if max_outstanding > 0 {
             let outstanding_now = self.outstanding.len() as u16;
@@ -291,8 +319,56 @@ impl SubscriptionActor {
 
         let now = Instant::now();
         let deadline = now + self.info.ack_deadline;
-        while let Some(message) = self.backlog.pop_front() {
-            // Drop messages whose retention window has elapsed. They never reach a subscriber.
+
+        // First, pull the head of each non-in-flight ordering-key queue (parallel across keys).
+        // Iterate keys in deterministic order to make tests stable.
+        let mut keys: Vec<String> = self
+            .ordered_queues
+            .iter()
+            .filter(|(k, q)| !self.keys_in_flight.contains(*k) && !q.is_empty())
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.sort();
+        for key in keys {
+            if result.len() >= capacity {
+                break;
+            }
+            // Drain expired or filter-failing heads silently.
+            loop {
+                let queue = match self.ordered_queues.get_mut(&key) {
+                    Some(q) => q,
+                    None => break,
+                };
+                let head = match queue.pop_front() {
+                    Some(m) => m,
+                    None => break,
+                };
+                if self.is_message_expired(&head, now) {
+                    self.delivery_attempts.remove(&head.id);
+                    continue;
+                }
+                let ack_id = self.next_ack_id;
+                self.next_ack_id = ack_id.next();
+                let delivery_attempt = self.delivery_attempts.get(&head.id).copied().unwrap_or(1);
+                let pulled_message = PulledMessage::new(
+                    Arc::clone(&head),
+                    ack_id,
+                    AckDeadline::new(&deadline),
+                    delivery_attempt,
+                );
+                result.push(pulled_message.clone());
+                self.outstanding.add(pulled_message);
+                self.keys_in_flight.insert(key.clone());
+                break;
+            }
+        }
+
+        // Then, drain the unkeyed backlog up to the remaining capacity.
+        while result.len() < capacity {
+            let message = match self.backlog.pop_front() {
+                Some(m) => m,
+                None => break,
+            };
             if self.is_message_expired(&message, now) {
                 self.delivery_attempts.remove(&message.id);
                 continue;
@@ -306,21 +382,23 @@ impl SubscriptionActor {
                 .get(&message.id)
                 .copied()
                 .unwrap_or(1);
-            let deadline = AckDeadline::new(&deadline);
-            let pulled_message =
-                PulledMessage::new(Arc::clone(&message), ack_id, deadline, delivery_attempt);
+            let pulled_message = PulledMessage::new(
+                Arc::clone(&message),
+                ack_id,
+                AckDeadline::new(&deadline),
+                delivery_attempt,
+            );
             result.push(pulled_message.clone());
-
-            // Track the outstanding message so we can ACK it later (and also expire it).
             self.outstanding.add(pulled_message);
-
-            if result.len() >= capacity {
-                break;
-            }
         }
 
-        // If there are still messages left in the backlog, trigger another signal.
-        if !self.backlog.is_empty() {
+        // Trigger another signal if more is pullable than we delivered.
+        let more_pending = !self.backlog.is_empty()
+            || self
+                .ordered_queues
+                .iter()
+                .any(|(k, q)| !self.keys_in_flight.contains(k) && !q.is_empty());
+        if more_pending {
             self.observer.notify_new_messages_available();
         }
 
@@ -347,13 +425,24 @@ impl SubscriptionActor {
         }
 
         let acked = self.outstanding.remove(ack_ids.into_iter());
+        let mut freed_keys: Vec<String> = Vec::new();
         for message in &acked {
             self.delivery_attempts.remove(&message.message().id);
+            if let Some(key) = &message.message().ordering_key
+                && self.info.enable_message_ordering
+                && self.keys_in_flight.remove(key)
+            {
+                freed_keys.push(key.clone());
+            }
         }
 
         if !acked.is_empty() {
             // Wake any flow-control-bounded streaming pulls that are blocked at their cap.
             self.observer.notify_outstanding_freed();
+        }
+        // If any key freed up, the next message for that key is now pullable.
+        if !freed_keys.is_empty() {
+            self.observer.notify_new_messages_available();
         }
 
         Ok(())
@@ -398,6 +487,8 @@ impl SubscriptionActor {
         self.backlog.clear();
         self.retry_queue.clear();
         self.delivery_attempts.clear();
+        self.ordered_queues.clear();
+        self.keys_in_flight.clear();
 
         // Unregister the subscription from push.
         self.push_registry.set(self.info.name.clone(), None);
@@ -407,6 +498,7 @@ impl SubscriptionActor {
 
     /// Gets the stats for the subscription.
     fn get_stats(&mut self) -> Result<SubscriptionStats, GetStatsError> {
+        let ordered_pending: usize = self.ordered_queues.values().map(|q| q.len()).sum();
         let stats = SubscriptionStats::new(
             self.info.name.clone(),
             self.topic
@@ -414,7 +506,7 @@ impl SubscriptionActor {
                 .map(|t| t.name.clone())
                 .unwrap_or_else(TopicName::deleted),
             self.outstanding.len(),
-            self.backlog.len() + self.retry_queue.len(),
+            self.backlog.len() + self.retry_queue.len() + ordered_pending,
         );
         Ok(stats)
     }
@@ -477,9 +569,12 @@ impl SubscriptionActor {
                 let backoff = retry_policy.calculate_backoff(*attempt);
                 let deliver_at = AckDeadline::new(&(now + backoff));
                 self.retry_queue.add(message, deliver_at);
-            } else {
-                self.backlog.append(std::iter::once(message));
+                // The retry queue path delivers via handle_retry_ready which routes the
+                // message back through the appropriate destination. We just need to release
+                // the key now so other streams aren't blocked while waiting for backoff.
+                continue;
             }
+            self.requeue_one(message);
         }
 
         // Publish dead-lettered messages to the DLQ topic if configured.
@@ -537,32 +632,38 @@ impl SubscriptionActor {
         }
     }
 
-    /// Handles messages whose retry backoff has elapsed by moving them to the backlog.
+    /// Handles messages whose retry backoff has elapsed by routing them back to the
+    /// appropriate queue (ordered head or unordered backlog).
     fn handle_retry_ready(&mut self, ready: Vec<Arc<TopicMessage>>) {
         let now = Instant::now();
-        let total = ready.len();
-        let mut dropped = 0;
-        let live: Vec<_> = ready
-            .into_iter()
-            .filter(|m| {
-                if self.is_message_expired(m, now) {
-                    self.delivery_attempts.remove(&m.id);
-                    dropped += 1;
-                    false
-                } else {
-                    true
-                }
-            })
-            .collect();
-        log::debug!(
-            "{}: {} retry messages ready ({} expired, dropped)",
-            &self.info.name,
-            total,
-            dropped
-        );
-        self.backlog.append(live);
-        if !self.backlog.is_empty() {
+        let mut delivered_any = false;
+        for message in ready {
+            if self.is_message_expired(&message, now) {
+                self.delivery_attempts.remove(&message.id);
+                continue;
+            }
+            self.requeue_one(message);
+            delivered_any = true;
+        }
+        if delivered_any {
             self.observer.notify_new_messages_available();
+        }
+    }
+
+    /// Routes a single message back to the right queue. For ordered subscriptions a keyed
+    /// message returns to the head of its per-key queue and the in-flight flag is cleared
+    /// so it (or a sibling key) can be pulled again.
+    fn requeue_one(&mut self, message: Arc<TopicMessage>) {
+        if let Some(key) = message.ordering_key.clone()
+            && self.info.enable_message_ordering
+        {
+            self.ordered_queues
+                .entry(key.clone())
+                .or_default()
+                .push_front(message);
+            self.keys_in_flight.remove(&key);
+        } else {
+            self.backlog.append(std::iter::once(message));
         }
     }
 }

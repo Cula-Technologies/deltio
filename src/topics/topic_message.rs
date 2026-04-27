@@ -15,6 +15,9 @@ pub struct TopicMessage {
     pub published_at_instant: Instant,
     pub data: Bytes,
     pub attributes: Option<HashMap<String, String>>,
+    /// Empty key (None) means the message is unordered. When the subscription has
+    /// `enable_message_ordering`, messages sharing a key are delivered FIFO one at a time.
+    pub ordering_key: Option<String>,
 }
 
 impl TopicMessage {
@@ -26,6 +29,7 @@ impl TopicMessage {
             id: MessageId::default(),
             published_at: SystemTime::UNIX_EPOCH,
             published_at_instant: Instant::now(),
+            ordering_key: None,
         }
     }
 

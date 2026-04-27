@@ -57,13 +57,13 @@ silently per Pub/Sub semantics).
 **Goal**: respect client's flow control limit from initial StreamingPullRequest. Don't
 deliver more than `max_outstanding_messages - currently_outstanding` per yield.
 **Tests**: subscribe with `max_outstanding_messages=2`, publish 10, assert only 2 delivered, ack one, assert 3rd delivered.
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage E: Ordering keys
 **Goal**: per-key FIFO. Don't deliver next message for key K until current outstanding
 message for K is acked. Different keys deliver in parallel.
 **Tests**: publish [k1:m1, k1:m2, k2:m3], pull all, expect (k1:m1, k2:m3); ack k1:m1; expect k1:m2 next pull.
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage F: Exactly-once delivery — AcknowledgeConfirmation
 **Goal**: when `enable_exactly_once_delivery=true`, the server returns

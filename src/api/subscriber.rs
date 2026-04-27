@@ -396,38 +396,44 @@ impl Subscriber for SubscriberService {
 
         log::debug!("{}: starting streaming pull {}", subscription_name, start);
 
-        // Pulls messages and streams them to the client.
+        // Pulls messages and streams them to the client. Flow control: never deliver more
+        // than `max_outstanding_messages` total to this stream. `0` means "no cap".
         let pull_stream = {
             let subscription = Arc::clone(&subscription);
-            let max_count: u16 = request.max_outstanding_messages.try_into().map_err(|_| {
-                Status::invalid_argument("max_outstanding_messages is out of range")
-            })?;
+            let max_outstanding: u16 = match request.max_outstanding_messages {
+                v if v < 0 => {
+                    return Err(Status::invalid_argument(
+                        "max_outstanding_messages must be non-negative",
+                    ));
+                }
+                v if v > u16::MAX as i64 => u16::MAX,
+                v => v as u16,
+            };
 
             async_stream::try_stream! {
-                // TODO: Respect the max_* settings if possible?
                 let mut was_deleted = false;
                 while !was_deleted {
-                    // First, subscribe to the messages signal so that
-                    // any new messages from this point forward will trigger
-                    // the notification.
+                    // Subscribe to signals BEFORE the pull so that any change between
+                    // the pull and the wait is observed.
                     let signal = subscription.messages_available();
-
-                    // Subscribe to the deletion signal.
+                    let freed = subscription.outstanding_freed();
                     let deleted = subscription.deleted();
 
-                    // Then, pull the available messages from the subscription.
-                    let pulled = match subscription.pull_messages(max_count).await {
+                    // Pull respecting the flow-control cap. With cap=0 the actor uses its
+                    // own MAX_PULL_COUNT internal bound.
+                    let pulled = match subscription
+                        .pull_messages_capped(max_outstanding.max(1), max_outstanding)
+                        .await
+                    {
                         Err(PullMessagesError::Closed) => return,
                         Ok(pulled) => pulled,
                     };
 
-                    // Map them to the protocol format.
                     let received_messages = pulled
                         .iter()
                         .map(map_to_received_message)
                         .collect::<Vec<_>>();
 
-                    // If we received any messages, yield them back.
                     if !received_messages.is_empty() {
                         log::debug!(
                             "{}: streaming-pulled {} messages",
@@ -442,16 +448,14 @@ impl Subscriber for SubscriberService {
                         };
                     }
 
-                    // Wait for the next signal and do it all over again.
-                    // If the subscription is deleted while we wait, return a not found.
+                    // Wake on any of: new backlog message, ack/freed slot, or deletion.
                     was_deleted = tokio::select! {
                         _ = signal => false,
+                        _ = freed => false,
                         _ = deleted => true
                     };
                 }
 
-                // If we ever get here, it means the loop above broke due to
-                // the subscription being deleted.
                 yield Err(subscription_not_found(&subscription_name))?;
             }
         };

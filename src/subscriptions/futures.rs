@@ -25,6 +25,25 @@ impl<'a> Future for MessagesAvailable<'a> {
     }
 }
 
+/// A future that signals when an outstanding message has been acknowledged, freeing space
+/// for flow-control-bounded callers to pull more.
+pub struct OutstandingFreed<'a>(Notified<'a>);
+
+impl<'a> OutstandingFreed<'a> {
+    pub(crate) fn new(notified: Notified<'a>) -> Self {
+        Self(notified)
+    }
+}
+
+impl<'a> Future for OutstandingFreed<'a> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let notified = unsafe { self.map_unchecked_mut(|s| &mut s.0) };
+        notified.poll(cx)
+    }
+}
+
 /// A future that signals when the subscription has been deleted.
 pub struct Deleted(Shared<oneshot::Receiver<()>>);
 

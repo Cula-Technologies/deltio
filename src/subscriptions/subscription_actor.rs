@@ -1,7 +1,7 @@
 use crate::collections::Messages;
 use crate::push::PushSubscriptionsRegistry;
 use crate::subscriptions::errors::*;
-use crate::subscriptions::futures::{Deleted, MessagesAvailable};
+use crate::subscriptions::futures::{Deleted, MessagesAvailable, OutstandingFreed};
 use crate::subscriptions::outstanding::OutstandingMessageTracker;
 use crate::subscriptions::retry_queue::RetryQueue;
 use crate::subscriptions::subscription_manager::SubscriptionManagerDelegate;
@@ -36,6 +36,9 @@ pub enum SubscriptionRequest {
     },
     PullMessages {
         max_count: u16,
+        /// Maximum total outstanding messages allowed for this caller. The actor caps the
+        /// returned batch so `outstanding_after_pull <= max_outstanding`. `0` means no cap.
+        max_outstanding: u16,
         responder: oneshot::Sender<Result<Vec<PulledMessage>, PullMessagesError>>,
     },
     AcknowledgeMessages {
@@ -196,9 +199,10 @@ impl SubscriptionActor {
             }
             SubscriptionRequest::PullMessages {
                 max_count,
+                max_outstanding,
                 responder,
             } => {
-                let result = self.pull_messages(max_count);
+                let result = self.pull_messages(max_count, max_outstanding);
                 let _ = responder.send(result);
             }
             SubscriptionRequest::AcknowledgeMessages { ack_ids, responder } => {
@@ -260,15 +264,30 @@ impl SubscriptionActor {
     }
 
     /// Pulls messages from the subscription, marking them as outstanding so they won't be
-    /// delivered to anyone else.
-    fn pull_messages(&mut self, max_count: u16) -> Result<Vec<PulledMessage>, PullMessagesError> {
+    /// delivered to anyone else. `max_outstanding` is the caller's flow-control cap (0 = no
+    /// cap); the returned batch never makes the total outstanding count exceed it.
+    fn pull_messages(
+        &mut self,
+        max_count: u16,
+        max_outstanding: u16,
+    ) -> Result<Vec<PulledMessage>, PullMessagesError> {
         if self.deleted {
             return Ok(Default::default());
         }
 
         let outgoing_len = self.backlog.len() as u16;
-        let capacity = max_count.clamp(0, outgoing_len.max(MAX_PULL_COUNT)) as usize;
+        let mut effective_max = max_count.clamp(0, outgoing_len.max(MAX_PULL_COUNT));
+        if max_outstanding > 0 {
+            let outstanding_now = self.outstanding.len() as u16;
+            let headroom = max_outstanding.saturating_sub(outstanding_now);
+            effective_max = effective_max.min(headroom);
+        }
+        let capacity = effective_max as usize;
         let mut result = Vec::with_capacity(capacity);
+
+        if capacity == 0 {
+            return Ok(result);
+        }
 
         let now = Instant::now();
         let deadline = now + self.info.ack_deadline;
@@ -330,6 +349,11 @@ impl SubscriptionActor {
         let acked = self.outstanding.remove(ack_ids.into_iter());
         for message in &acked {
             self.delivery_attempts.remove(&message.message().id);
+        }
+
+        if !acked.is_empty() {
+            // Wake any flow-control-bounded streaming pulls that are blocked at their cap.
+            self.observer.notify_outstanding_freed();
         }
 
         Ok(())
@@ -548,6 +572,10 @@ pub(crate) struct SubscriptionObserver {
     /// Notifies when there are new messages to pull.
     notify_messages_available: Notify,
 
+    /// Notifies when an outstanding message is acknowledged so flow-control-bounded callers
+    /// can wake up and try to pull more.
+    notify_outstanding_freed: Notify,
+
     /// Notifies when the subscription gets deleted.
     /// Used by consumers to cancel any in-progress long-running operations.
     deleted_recv: Shared<oneshot::Receiver<()>>,
@@ -566,12 +594,27 @@ impl SubscriptionObserver {
             deleted_send: Mutex::new(Some(deleted_send)),
             deleted_recv: deleted_recv.shared(),
             notify_messages_available: Notify::new(),
+            notify_outstanding_freed: Notify::new(),
         }
     }
 
     /// Notifies of new messages being available.
     pub fn notify_new_messages_available(&self) {
         self.notify_messages_available.notify_one();
+    }
+
+    /// Notifies that the outstanding count went down (e.g. after an ack), so flow-control
+    /// bounded callers can pull more.
+    pub fn notify_outstanding_freed(&self) {
+        // `notify_waiters` so all currently-waiting streams wake (multiple subscribers may
+        // share a subscription). Future calls to `outstanding_freed()` after this will not
+        // be eager; they will wait for the next call.
+        self.notify_outstanding_freed.notify_waiters();
+    }
+
+    /// Returns a signal for outstanding-count freed events.
+    pub fn outstanding_freed(&self) -> OutstandingFreed<'_> {
+        OutstandingFreed::new(self.notify_outstanding_freed.notified())
     }
 
     /// Notifies that the subscription was deleted.

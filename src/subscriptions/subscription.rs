@@ -1,6 +1,6 @@
 use crate::push::PushSubscriptionsRegistry;
 use crate::subscriptions::errors::*;
-use crate::subscriptions::futures::{Deleted, MessagesAvailable};
+use crate::subscriptions::futures::{Deleted, MessagesAvailable, OutstandingFreed};
 use crate::subscriptions::policies::{DeadLetterPolicy, RetryPolicy};
 use crate::subscriptions::subscription_actor::{
     SubscriptionActor, SubscriptionObserver, SubscriptionRequest,
@@ -143,6 +143,12 @@ impl Subscription {
         self.observer.new_messages_available()
     }
 
+    /// Returns a signal that fires when the outstanding count drops (e.g. after an ack),
+    /// so flow-control-bounded callers can re-poll.
+    pub fn outstanding_freed(&self) -> OutstandingFreed<'_> {
+        self.observer.outstanding_freed()
+    }
+
     /// Returns a signal for when the subscription gets deleted.
     pub fn deleted(&self) -> Deleted {
         self.observer.deleted()
@@ -171,15 +177,26 @@ impl Subscription {
         recv.await.map_err(|_| GetInfoError::Closed)?
     }
 
-    /// Pulls messages from the subscription.
+    /// Pulls messages from the subscription with no flow-control cap.
     pub async fn pull_messages(
         &self,
         max_count: u16,
+    ) -> Result<Vec<PulledMessage>, PullMessagesError> {
+        self.pull_messages_capped(max_count, 0).await
+    }
+
+    /// Pulls messages from the subscription, ensuring the post-pull outstanding count does
+    /// not exceed `max_outstanding`. `0` disables the cap.
+    pub async fn pull_messages_capped(
+        &self,
+        max_count: u16,
+        max_outstanding: u16,
     ) -> Result<Vec<PulledMessage>, PullMessagesError> {
         let (responder, recv) = oneshot::channel();
         self.sender
             .send(SubscriptionRequest::PullMessages {
                 max_count,
+                max_outstanding,
                 responder,
             })
             .await

@@ -51,13 +51,13 @@ correctly through Get/List.
 `AND/OR/NOT`, parens. Filter applied at pull time (skip non-matching, ack-drop them
 silently per Pub/Sub semantics).
 **Tests**: parse + eval unit tests for grammar; integration test of filter applied to streaming pull.
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage D: Streaming-pull `max_outstanding_messages` honor
 **Goal**: respect client's flow control limit from initial StreamingPullRequest. Don't
 deliver more than `max_outstanding_messages - currently_outstanding` per yield.
 **Tests**: subscribe with `max_outstanding_messages=2`, publish 10, assert only 2 delivered, ack one, assert 3rd delivered.
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage E: Ordering keys
 **Goal**: per-key FIFO. Don't deliver next message for key K until current outstanding

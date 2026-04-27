@@ -3,11 +3,11 @@ use crate::paging::Paging;
 use crate::pubsub_proto::push_config::AuthenticationMethod;
 use crate::pubsub_proto::{
     DeadLetterPolicy as DeadLetterPolicyProto, PubsubMessage, PushConfig as PushConfigProto,
-    RetryPolicy as RetryPolicyProto,
+    RetryPolicy as RetryPolicyProto, Subscription as SubscriptionProto,
 };
 use crate::subscriptions::{
     AckDeadline, AckId, AckIdParseError, DeadLetterPolicy, DeadlineModification, PushConfig,
-    PushConfigOidcToken, RetryPolicy, SubscriptionName,
+    PushConfigOidcToken, RetryPolicy, SubscriptionName, SubscriptionUpdate,
 };
 use crate::topics::{TopicMessage, TopicName};
 use bytes::Bytes;
@@ -201,6 +201,127 @@ pub(crate) fn parse_dead_letter_policy(
         dead_letter_topic,
         max_delivery_attempts,
     })
+}
+
+/// Parses a `message_retention_duration` proto value into a `Duration`.
+///
+/// Pub/Sub specifies a minimum of 10 minutes and a maximum of 7 days. We clamp to those bounds
+/// rather than reject so that callers don't fail on slight overshoots from rounding.
+pub(crate) fn parse_message_retention_duration(
+    duration_proto: &prost_types::Duration,
+) -> Result<Duration, Status> {
+    if duration_proto.seconds < 0 || duration_proto.nanos < 0 {
+        return Err(Status::invalid_argument(
+            "message_retention_duration must be non-negative",
+        ));
+    }
+    let raw = Duration::new(duration_proto.seconds as u64, duration_proto.nanos as u32);
+    let min = Duration::from_secs(10 * 60);
+    let max = Duration::from_secs(7 * 24 * 60 * 60);
+    Ok(raw.clamp(min, max))
+}
+
+/// Field-mask paths supported on UpdateSubscription. Anything else is rejected.
+const UPDATABLE_PATHS: &[&str] = &[
+    "ack_deadline_seconds",
+    "retry_policy",
+    "dead_letter_policy",
+    "message_retention_duration",
+    "enable_exactly_once_delivery",
+];
+
+/// Field-mask paths that exist on `Subscription` but cannot be updated post-create.
+const IMMUTABLE_PATHS: &[&str] = &[
+    "name",
+    "topic",
+    "enable_message_ordering",
+    "filter",
+    "detached",
+    "labels",
+    "expiration_policy",
+    "push_config",
+    "bigquery_config",
+    "retain_acked_messages",
+    "topic_message_retention_duration",
+    "state",
+];
+
+/// Parses a `SubscriptionUpdate` from the proto resource and field-mask paths. Validates
+/// that every path is supported and the values for those paths are well-formed.
+pub(crate) fn parse_subscription_update(
+    subscription: &SubscriptionProto,
+    paths: &[String],
+) -> Result<SubscriptionUpdate, Status> {
+    if paths.is_empty() {
+        return Err(Status::invalid_argument(
+            "update_mask must be specified and non-empty",
+        ));
+    }
+
+    let mut update = SubscriptionUpdate::default();
+    for path in paths {
+        let path = path.as_str();
+        if IMMUTABLE_PATHS.contains(&path) {
+            return Err(Status::invalid_argument(format!(
+                "Field '{}' is not modifiable after creation",
+                path
+            )));
+        }
+        if !UPDATABLE_PATHS.contains(&path) {
+            return Err(Status::invalid_argument(format!(
+                "Field '{}' is not a valid update path",
+                path
+            )));
+        }
+        match path {
+            "ack_deadline_seconds" => {
+                update.ack_deadline =
+                    Some(parse_create_ack_deadline(subscription.ack_deadline_seconds));
+            }
+            "retry_policy" => {
+                update.retry_policy = Some(
+                    subscription
+                        .retry_policy
+                        .as_ref()
+                        .map(parse_retry_policy)
+                        .transpose()?,
+                );
+            }
+            "dead_letter_policy" => {
+                update.dead_letter_policy = Some(
+                    subscription
+                        .dead_letter_policy
+                        .as_ref()
+                        .map(parse_dead_letter_policy)
+                        .transpose()?,
+                );
+            }
+            "message_retention_duration" => {
+                update.message_retention_duration = Some(
+                    subscription
+                        .message_retention_duration
+                        .as_ref()
+                        .map(parse_message_retention_duration)
+                        .transpose()?,
+                );
+            }
+            "enable_exactly_once_delivery" => {
+                update.enable_exactly_once_delivery =
+                    Some(subscription.enable_exactly_once_delivery);
+            }
+            _ => unreachable!("path validated above"),
+        }
+    }
+    Ok(update)
+}
+
+/// Parses the `ack_deadline_seconds` field on a Subscription create/update payload, applying
+/// the same minimum-10s rule the Create handler uses.
+pub(crate) fn parse_create_ack_deadline(raw_value: i32) -> Duration {
+    match raw_value {
+        v if v <= 10 => Duration::from_secs(10),
+        _ => Duration::from_secs(raw_value as u64),
+    }
 }
 
 /// Parses a `TopicMessage`, consuming the proto to avoid cloning data.

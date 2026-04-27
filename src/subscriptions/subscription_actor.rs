@@ -7,7 +7,7 @@ use crate::subscriptions::retry_queue::RetryQueue;
 use crate::subscriptions::subscription_manager::SubscriptionManagerDelegate;
 use crate::subscriptions::{
     AckDeadline, AckId, AcknowledgeMessagesError, DeadlineModification, PulledMessage,
-    SubscriptionInfo, SubscriptionStats,
+    SubscriptionInfo, SubscriptionStats, SubscriptionUpdate,
 };
 use crate::topics::topic_manager::TopicManager;
 use crate::topics::{MessageId, RemoveSubscriptionError, Topic, TopicMessage, TopicName};
@@ -28,6 +28,10 @@ pub enum SubscriptionRequest {
         messages: Arc<[Arc<TopicMessage>]>,
     },
     GetInfo {
+        responder: oneshot::Sender<Result<SubscriptionInfo, GetInfoError>>,
+    },
+    UpdateInfo {
+        update: SubscriptionUpdate,
         responder: oneshot::Sender<Result<SubscriptionInfo, GetInfoError>>,
     },
     PullMessages {
@@ -167,6 +171,10 @@ impl SubscriptionActor {
                 let result = self.get_info();
                 let _ = responder.send(result);
             }
+            SubscriptionRequest::UpdateInfo { update, responder } => {
+                let result = self.update_info(update);
+                let _ = responder.send(result);
+            }
             SubscriptionRequest::PullMessages {
                 max_count,
                 responder,
@@ -198,6 +206,15 @@ impl SubscriptionActor {
 
     /// Gets info about the subscription.
     fn get_info(&mut self) -> Result<SubscriptionInfo, GetInfoError> {
+        Ok(self.info.clone())
+    }
+
+    /// Applies an update to the info.
+    fn update_info(
+        &mut self,
+        update: SubscriptionUpdate,
+    ) -> Result<SubscriptionInfo, GetInfoError> {
+        self.info.apply_update(update);
         Ok(self.info.clone())
     }
 

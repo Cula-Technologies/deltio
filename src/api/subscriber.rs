@@ -57,10 +57,7 @@ impl Subscriber for SubscriberService {
 
         let topic_name = parser::parse_topic_name(&request.topic)?;
         let subscription_name = parser::parse_subscription_name(&request.name)?;
-        let ack_deadline = match request.ack_deadline_seconds {
-            v if v <= 10 => Duration::from_secs(10),
-            _ => Duration::from_secs(request.ack_deadline_seconds as u64),
-        };
+        let ack_deadline = parser::parse_create_ack_deadline(request.ack_deadline_seconds);
         let push_config = request
             .push_config
             .as_ref()
@@ -76,13 +73,26 @@ impl Subscriber for SubscriberService {
             .as_ref()
             .map(parser::parse_dead_letter_policy)
             .transpose()?;
-        let subscription_info = SubscriptionInfo::new(
+        let message_retention_duration = request
+            .message_retention_duration
+            .as_ref()
+            .map(parser::parse_message_retention_duration)
+            .transpose()?;
+        let filter = match request.filter.trim() {
+            "" => None,
+            f => Some(f.to_string()),
+        };
+        let mut subscription_info = SubscriptionInfo::new(
             subscription_name.clone(),
             ack_deadline,
             push_config,
             retry_policy,
             dead_letter_policy,
         );
+        subscription_info.message_retention_duration = message_retention_duration;
+        subscription_info.enable_message_ordering = request.enable_message_ordering;
+        subscription_info.enable_exactly_once_delivery = request.enable_exactly_once_delivery;
+        subscription_info.filter = filter;
 
         let topic = self
             .topic_manager
@@ -161,11 +171,33 @@ impl Subscriber for SubscriberService {
 
     async fn update_subscription(
         &self,
-        _request: Request<UpdateSubscriptionRequest>,
+        request: Request<UpdateSubscriptionRequest>,
     ) -> Result<Response<Subscription>, Status> {
-        Err(Status::unimplemented(
-            "UpdateSubscription is not implemented in Deltio",
-        ))
+        let start = ActivitySpan::start();
+        let request = request.into_inner();
+        let proto_subscription = request
+            .subscription
+            .ok_or_else(|| Status::invalid_argument("subscription must be specified"))?;
+        let mask = request
+            .update_mask
+            .ok_or_else(|| Status::invalid_argument("update_mask must be specified"))?;
+
+        let subscription_name = parser::parse_subscription_name(&proto_subscription.name)?;
+        let update = parser::parse_subscription_update(&proto_subscription, &mask.paths)?;
+
+        let subscription = get_subscription(&self.subscription_manager, &subscription_name)?;
+        let info = subscription
+            .update_info(update)
+            .await
+            .map_err(|e| match e {
+                GetInfoError::Closed => conflict(),
+            })?;
+
+        log::debug!("{}: updating subscription {}", &subscription_name, start);
+        Ok(Response::new(map_to_subscription_resource(
+            &subscription,
+            &info,
+        )))
     }
 
     async fn list_subscriptions(
@@ -668,11 +700,16 @@ fn map_to_subscription_resource(
         bigquery_config: None,
         ack_deadline_seconds: info.ack_deadline.as_secs() as i32,
         retain_acked_messages: false,
-        message_retention_duration: None,
+        message_retention_duration: info.message_retention_duration.map(|d| {
+            prost_types::Duration {
+                seconds: d.as_secs() as i64,
+                nanos: d.subsec_nanos() as i32,
+            }
+        }),
         labels: Default::default(),
-        enable_message_ordering: false,
+        enable_message_ordering: info.enable_message_ordering,
         expiration_policy: None,
-        filter: Default::default(),
+        filter: info.filter.clone().unwrap_or_default(),
         dead_letter_policy: info
             .dead_letter_policy
             .as_ref()
@@ -691,7 +728,7 @@ fn map_to_subscription_resource(
             }),
         }),
         detached: false,
-        enable_exactly_once_delivery: false,
+        enable_exactly_once_delivery: info.enable_exactly_once_delivery,
         topic_message_retention_duration: None,
         state: 0,
     }

@@ -9,6 +9,7 @@ use crate::subscriptions::subscription_manager::SubscriptionManagerDelegate;
 use crate::subscriptions::{
     AckId, DeadlineModification, PulledMessage, SubscriptionName, SubscriptionStats,
 };
+// `SubscriptionUpdate` is re-exported by `crate::subscriptions::mod` below.
 use crate::topics::topic_manager::TopicManager;
 use crate::topics::{Topic, TopicMessage};
 use std::cmp::Ordering;
@@ -52,6 +53,34 @@ pub struct SubscriptionInfo {
 
     /// If specified, messages exceeding max delivery attempts are forwarded to a dead letter topic.
     pub dead_letter_policy: Option<DeadLetterPolicy>,
+
+    /// How long to retain unacknowledged messages.
+    pub message_retention_duration: Option<Duration>,
+
+    /// Whether messages should be delivered in order per ordering key.
+    /// Immutable after creation.
+    pub enable_message_ordering: bool,
+
+    /// Whether ack tokens are confirmed for exactly-once semantics.
+    pub enable_exactly_once_delivery: bool,
+
+    /// Filter expression. Empty means no filtering.
+    /// Immutable after creation.
+    pub filter: Option<String>,
+}
+
+/// A partial update to a [`SubscriptionInfo`]. Fields that are `Some(_)` will overwrite
+/// the corresponding fields on the info; fields that are `None` are left unchanged.
+///
+/// `dead_letter_policy` and `retry_policy` are unwrapped (`Option<Option<T>>`) so callers
+/// can distinguish "leave alone" (`None`) from "clear the policy" (`Some(None)`).
+#[derive(Debug, Clone, Default)]
+pub struct SubscriptionUpdate {
+    pub ack_deadline: Option<Duration>,
+    pub retry_policy: Option<Option<RetryPolicy>>,
+    pub dead_letter_policy: Option<Option<DeadLetterPolicy>>,
+    pub message_retention_duration: Option<Option<Duration>>,
+    pub enable_exactly_once_delivery: Option<bool>,
 }
 
 /// Configuration for push subscriptions.
@@ -124,6 +153,19 @@ impl Subscription {
         let (responder, recv) = oneshot::channel();
         self.sender
             .send(SubscriptionRequest::GetInfo { responder })
+            .await
+            .map_err(|_| GetInfoError::Closed)?;
+        recv.await.map_err(|_| GetInfoError::Closed)?
+    }
+
+    /// Applies a partial update to the subscription's info. Returns the updated info.
+    pub async fn update_info(
+        &self,
+        update: SubscriptionUpdate,
+    ) -> Result<SubscriptionInfo, GetInfoError> {
+        let (responder, recv) = oneshot::channel();
+        self.sender
+            .send(SubscriptionRequest::UpdateInfo { update, responder })
             .await
             .map_err(|_| GetInfoError::Closed)?;
         recv.await.map_err(|_| GetInfoError::Closed)?
@@ -247,6 +289,10 @@ impl SubscriptionInfo {
             push_config,
             retry_policy,
             dead_letter_policy,
+            message_retention_duration: None,
+            enable_message_ordering: false,
+            enable_exactly_once_delivery: false,
+            filter: None,
         }
     }
 
@@ -258,6 +304,29 @@ impl SubscriptionInfo {
             push_config: None,
             retry_policy: None,
             dead_letter_policy: None,
+            message_retention_duration: None,
+            enable_message_ordering: false,
+            enable_exactly_once_delivery: false,
+            filter: None,
+        }
+    }
+
+    /// Applies a [`SubscriptionUpdate`] to this info, mutating fields that are `Some`.
+    pub fn apply_update(&mut self, update: SubscriptionUpdate) {
+        if let Some(d) = update.ack_deadline {
+            self.ack_deadline = d;
+        }
+        if let Some(rp) = update.retry_policy {
+            self.retry_policy = rp;
+        }
+        if let Some(dlp) = update.dead_letter_policy {
+            self.dead_letter_policy = dlp;
+        }
+        if let Some(mrd) = update.message_retention_duration {
+            self.message_retention_duration = mrd;
+        }
+        if let Some(eod) = update.enable_exactly_once_delivery {
+            self.enable_exactly_once_delivery = eod;
         }
     }
 }

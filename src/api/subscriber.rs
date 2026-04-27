@@ -419,10 +419,16 @@ impl Subscriber for SubscriberService {
                     let freed = subscription.outstanding_freed();
                     let deleted = subscription.deleted();
 
-                    // Pull respecting the flow-control cap. With cap=0 the actor uses its
-                    // own MAX_PULL_COUNT internal bound.
+                    // Pull respecting the flow-control cap. With cap=0 there is no per-stream
+                    // bound; we ask for a generous batch and let the actor's internal
+                    // MAX_PULL_COUNT clamp.
+                    let max_per_pull = if max_outstanding == 0 {
+                        u16::MAX
+                    } else {
+                        max_outstanding
+                    };
                     let pulled = match subscription
-                        .pull_messages_capped(max_outstanding.max(1), max_outstanding)
+                        .pull_messages_capped(max_per_pull, max_outstanding)
                         .await
                     {
                         Err(PullMessagesError::Closed) => return,

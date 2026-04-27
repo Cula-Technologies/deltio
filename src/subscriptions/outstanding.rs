@@ -176,6 +176,11 @@ impl OutstandingMessageTracker {
         self.messages.len()
     }
 
+    /// Returns true if the tracker holds the given ack-id.
+    pub fn contains(&self, ack_id: &AckId) -> bool {
+        self.messages.contains_key(ack_id)
+    }
+
     /// Polls for the next batch of expired messages.
     pub async fn poll_next_expired(&mut self) -> Option<Vec<PulledMessage>> {
         loop {

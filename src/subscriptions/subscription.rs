@@ -69,6 +69,17 @@ pub struct SubscriptionInfo {
     pub filter: Option<String>,
 }
 
+/// Result of an `acknowledge_messages` or `modify_ack_deadlines` call. Used by the
+/// streaming-pull layer to build `AcknowledgeConfirmation` / `ModifyAckDeadlineConfirmation`
+/// responses when exactly-once delivery is enabled.
+#[derive(Debug, Default, Clone)]
+pub struct AckOutcome {
+    /// Ack-ids that were valid (existed in the outstanding set) and were processed.
+    pub valid: Vec<AckId>,
+    /// Ack-ids that were not recognised — already acked, never pulled, or expired.
+    pub invalid: Vec<AckId>,
+}
+
 /// A partial update to a [`SubscriptionInfo`]. Fields that are `Some(_)` will overwrite
 /// the corresponding fields on the info; fields that are `None` are left unchanged.
 ///
@@ -219,11 +230,12 @@ impl Subscription {
             .map_err(|_| PostMessagesError::Closed)
     }
 
-    /// Acknowledges messages.
+    /// Acknowledges messages. Returns an `AckOutcome` describing which ack-ids were valid
+    /// and which were not (caller can ignore for non-exactly-once subscriptions).
     pub async fn acknowledge_messages(
         &self,
         ack_ids: Vec<AckId>,
-    ) -> Result<(), AcknowledgeMessagesError> {
+    ) -> Result<AckOutcome, AcknowledgeMessagesError> {
         let (responder, recv) = oneshot::channel();
         self.sender
             .send(SubscriptionRequest::AcknowledgeMessages { ack_ids, responder })
@@ -232,11 +244,12 @@ impl Subscription {
         recv.await.map_err(|_| AcknowledgeMessagesError::Closed)?
     }
 
-    /// Modify the acknowledgment deadlines.
+    /// Modify the acknowledgment deadlines. Returns an `AckOutcome` describing which ack-ids
+    /// were valid and which were not.
     pub async fn modify_ack_deadlines(
         &self,
         deadline_modifications: Vec<DeadlineModification>,
-    ) -> Result<(), ModifyDeadlineError> {
+    ) -> Result<AckOutcome, ModifyDeadlineError> {
         let (responder, recv) = oneshot::channel();
         self.sender
             .send(SubscriptionRequest::ModifyDeadline {

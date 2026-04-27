@@ -6,8 +6,8 @@ use crate::subscriptions::outstanding::OutstandingMessageTracker;
 use crate::subscriptions::retry_queue::RetryQueue;
 use crate::subscriptions::subscription_manager::SubscriptionManagerDelegate;
 use crate::subscriptions::{
-    AckDeadline, AckId, AcknowledgeMessagesError, DeadlineModification, Filter, PulledMessage,
-    SubscriptionInfo, SubscriptionStats, SubscriptionUpdate,
+    AckDeadline, AckId, AckOutcome, AcknowledgeMessagesError, DeadlineModification, Filter,
+    PulledMessage, SubscriptionInfo, SubscriptionStats, SubscriptionUpdate,
 };
 use crate::topics::topic_manager::TopicManager;
 use crate::topics::{MessageId, RemoveSubscriptionError, Topic, TopicMessage, TopicName};
@@ -43,11 +43,11 @@ pub enum SubscriptionRequest {
     },
     AcknowledgeMessages {
         ack_ids: Vec<AckId>,
-        responder: oneshot::Sender<Result<(), AcknowledgeMessagesError>>,
+        responder: oneshot::Sender<Result<AckOutcome, AcknowledgeMessagesError>>,
     },
     ModifyDeadline {
         deadline_modifications: Vec<DeadlineModification>,
-        responder: oneshot::Sender<Result<(), ModifyDeadlineError>>,
+        responder: oneshot::Sender<Result<AckOutcome, ModifyDeadlineError>>,
     },
     Delete {
         responder: oneshot::Sender<Result<(), DeleteError>>,
@@ -419,12 +419,29 @@ impl SubscriptionActor {
     fn acknowledge_messages(
         &mut self,
         ack_ids: Vec<AckId>,
-    ) -> Result<(), AcknowledgeMessagesError> {
+    ) -> Result<AckOutcome, AcknowledgeMessagesError> {
         if self.deleted {
-            return Ok(());
+            return Ok(AckOutcome::default());
         }
 
-        let acked = self.outstanding.remove(ack_ids.into_iter());
+        // Capture which ack-ids actually exist before we remove, so we can split valid from
+        // invalid. (`outstanding.remove` doesn't tell us which ids it skipped.)
+        let mut outcome = AckOutcome::default();
+        let valid_ids: Vec<AckId> = ack_ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                if self.outstanding.contains(id) {
+                    outcome.valid.push(*id);
+                    true
+                } else {
+                    outcome.invalid.push(*id);
+                    false
+                }
+            })
+            .collect();
+
+        let acked = self.outstanding.remove(valid_ids.into_iter());
         let mut freed_keys: Vec<String> = Vec::new();
         for message in &acked {
             self.delivery_attempts.remove(&message.message().id);
@@ -445,22 +462,31 @@ impl SubscriptionActor {
             self.observer.notify_new_messages_available();
         }
 
-        Ok(())
+        Ok(outcome)
     }
 
     /// Modifies the deadline for messages that have been pulled.
     async fn modify_deadline(
         &mut self,
         deadline_modifications: Vec<DeadlineModification>,
-    ) -> Result<(), ModifyDeadlineError> {
+    ) -> Result<AckOutcome, ModifyDeadlineError> {
         if self.deleted {
-            return Ok(());
+            return Ok(AckOutcome::default());
+        }
+
+        let mut outcome = AckOutcome::default();
+        for m in &deadline_modifications {
+            if self.outstanding.contains(&m.ack_id) {
+                outcome.valid.push(m.ack_id);
+            } else {
+                outcome.invalid.push(m.ack_id);
+            }
         }
 
         let nacks = self.outstanding.modify(deadline_modifications);
         self.requeue_messages(nacks).await;
 
-        Ok(())
+        Ok(outcome)
     }
 
     /// Marks the subscription as deleted. Further requests will be no-ops.

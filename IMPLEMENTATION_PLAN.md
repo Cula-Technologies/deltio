@@ -63,7 +63,7 @@ deliver more than `max_outstanding_messages - currently_outstanding` per yield.
 **Goal**: per-key FIFO. Don't deliver next message for key K until current outstanding
 message for K is acked. Different keys deliver in parallel.
 **Tests**: publish [k1:m1, k1:m2, k2:m3], pull all, expect (k1:m1, k2:m3); ack k1:m1; expect k1:m2 next pull.
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage F: Exactly-once delivery — AcknowledgeConfirmation
 **Goal**: when `enable_exactly_once_delivery=true`, the server returns
@@ -71,7 +71,7 @@ message for K is acked. Different keys deliver in parallel.
 it as `invalid_ack_ids` / `temporary_failed_ack_ids`). Modern client uses this for
 exactly-once guarantees.
 **Tests**: streaming pull with EOD on, ack 1 message, expect AcknowledgeConfirmation with that ack-id; ack invalid id, expect it in invalid_ack_ids.
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage G: Smoke against `@google-cloud/pubsub` v5
 **Goal**: run the cula-platform `google-pubsub-event-subscriber.integration.spec.ts`

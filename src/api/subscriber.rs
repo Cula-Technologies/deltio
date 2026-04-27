@@ -1,6 +1,9 @@
 use crate::api::page_token::PageToken;
 use crate::api::parser;
 use crate::pubsub_proto::push_config::{AuthenticationMethod, OidcToken};
+use crate::pubsub_proto::streaming_pull_response::{
+    AcknowledgeConfirmation, ModifyAckDeadlineConfirmation, SubscriptionProperties,
+};
 use crate::pubsub_proto::subscriber_server::Subscriber;
 use crate::pubsub_proto::{
     AcknowledgeRequest, CreateSnapshotRequest, DeadLetterPolicy as DeadLetterPolicyProto,
@@ -394,6 +397,18 @@ impl Subscriber for SubscriberService {
         let subscription_name = parser::parse_subscription_name(&request.subscription)?;
         let subscription = get_subscription(&self.subscription_manager, &subscription_name)?;
 
+        // Read the EOD/ordering flags once so the streaming loop can shape responses
+        // accordingly without round-tripping to the actor on every iteration.
+        let info = subscription.get_info().await.map_err(|e| match e {
+            GetInfoError::Closed => conflict(),
+        })?;
+        let exactly_once_enabled = info.enable_exactly_once_delivery;
+        let ordering_enabled = info.enable_message_ordering;
+        let subscription_properties = SubscriptionProperties {
+            exactly_once_delivery_enabled: exactly_once_enabled,
+            message_ordering_enabled: ordering_enabled,
+        };
+
         log::debug!("{}: starting streaming pull {}", subscription_name, start);
 
         // Pulls messages and streams them to the client. Flow control: never deliver more
@@ -450,7 +465,11 @@ impl Subscriber for SubscriberService {
                             received_messages,
                             acknowledge_confirmation: None,
                             modify_ack_deadline_confirmation: None,
-                            subscription_properties: None,
+                            subscription_properties: if exactly_once_enabled || ordering_enabled {
+                                Some(subscription_properties.clone())
+                            } else {
+                                None
+                            },
                         };
                     }
 
@@ -473,8 +492,12 @@ impl Subscriber for SubscriberService {
             async_stream::try_stream! {
                 while let Some(request) = stream.next().await {
                     let request = request?;
-                    let response =
-                        handle_streaming_pull_request(request, Arc::clone(&subscription)).await?;
+                    let response = handle_streaming_pull_request(
+                        request,
+                        Arc::clone(&subscription),
+                        exactly_once_enabled,
+                    )
+                    .await?;
 
                     if let Some(response) = response {
                         yield response;
@@ -569,10 +592,14 @@ async fn pull_messages(
 
 /// Handles the control message for a streaming pull request.
 ///
-/// This is only called for **subsequent** requests on the incoming stream.
+/// This is only called for **subsequent** requests on the incoming stream. When the
+/// subscription has exactly-once delivery enabled, the returned response carries
+/// AcknowledgeConfirmation / ModifyAckDeadlineConfirmation describing which ack-ids the
+/// server processed and which it rejected.
 async fn handle_streaming_pull_request(
     request: StreamingPullRequest,
     subscription: Arc<crate::subscriptions::Subscription>,
+    exactly_once_enabled: bool,
 ) -> Result<Option<StreamingPullResponse>, Status> {
     if !request.subscription.is_empty() {
         return Err(Status::invalid_argument(
@@ -598,22 +625,51 @@ async fn handle_streaming_pull_request(
         ));
     }
 
-    // Ack messages if appropriate.
+    let mut ack_confirmation: Option<AcknowledgeConfirmation> = None;
+    let mut modify_confirmation: Option<ModifyAckDeadlineConfirmation> = None;
+
+    // Ack messages if appropriate. Track which were valid so we can confirm to the client.
     if !request.ack_ids.is_empty() {
         let start = ActivitySpan::start();
-        let ack_ids = request
-            .ack_ids
-            .iter()
-            .map(|ack_id| parser::parse_ack_id(ack_id))
-            .collect::<Result<Vec<_>, Status>>()?;
-
-        let ack_id_count = ack_ids.len();
-        subscription
-            .acknowledge_messages(ack_ids)
+        // Preserve the raw client-supplied strings so the confirmation echoes back exactly
+        // what we received — including ids that didn't parse.
+        let mut parse_failed: Vec<String> = Vec::new();
+        let mut parsed: Vec<(String, crate::subscriptions::AckId)> = Vec::new();
+        for raw in &request.ack_ids {
+            match parser::parse_ack_id(raw) {
+                Ok(id) => parsed.push((raw.clone(), id)),
+                Err(_) => parse_failed.push(raw.clone()),
+            }
+        }
+        let ack_ids_only: Vec<_> = parsed.iter().map(|(_, id)| *id).collect();
+        let ack_id_count = ack_ids_only.len();
+        let outcome = subscription
+            .acknowledge_messages(ack_ids_only)
             .await
             .map_err(|e| match e {
                 AcknowledgeMessagesError::Closed => conflict(),
             })?;
+
+        if exactly_once_enabled {
+            // Map AckIds back to their original string form for the confirmation.
+            let valid_strs: Vec<String> = parsed
+                .iter()
+                .filter(|(_, id)| outcome.valid.contains(id))
+                .map(|(raw, _)| raw.clone())
+                .collect();
+            let mut invalid_strs: Vec<String> = parsed
+                .iter()
+                .filter(|(_, id)| outcome.invalid.contains(id))
+                .map(|(raw, _)| raw.clone())
+                .collect();
+            invalid_strs.extend(parse_failed);
+            ack_confirmation = Some(AcknowledgeConfirmation {
+                ack_ids: valid_strs,
+                invalid_ack_ids: invalid_strs,
+                unordered_ack_ids: Vec::new(),
+                temporary_failed_ack_ids: Vec::new(),
+            });
+        }
 
         log::debug!(
             "{}: acked {} messages {}",
@@ -627,19 +683,53 @@ async fn handle_streaming_pull_request(
     if !request.modify_deadline_ack_ids.is_empty() {
         let start = ActivitySpan::start();
         let now = Instant::now();
-        let deadline_modifications = parser::parse_deadline_modifications(
+        let mut parse_failed: Vec<String> = Vec::new();
+        let raw_ids = request.modify_deadline_ack_ids.clone();
+        let deadline_modifications = match parser::parse_deadline_modifications(
             now,
             &request.modify_deadline_ack_ids,
             &request.modify_deadline_seconds,
-        )?;
+        ) {
+            Ok(mods) => mods,
+            Err(_) => {
+                // Treat all of them as invalid for the confirmation.
+                parse_failed.extend(raw_ids.iter().cloned());
+                Vec::new()
+            }
+        };
 
         let modifications_count = deadline_modifications.len();
-        subscription
+        // Build a mapping from ack-id string to AckId to translate outcome back.
+        let raw_to_id: std::collections::HashMap<String, crate::subscriptions::AckId> = raw_ids
+            .iter()
+            .filter_map(|raw| parser::parse_ack_id(raw).ok().map(|id| (raw.clone(), id)))
+            .collect();
+        let outcome = subscription
             .modify_ack_deadlines(deadline_modifications)
             .await
             .map_err(|e| match e {
                 ModifyDeadlineError::Closed => conflict(),
             })?;
+
+        if exactly_once_enabled {
+            let mut valid_strs: Vec<String> = Vec::new();
+            let mut invalid_strs: Vec<String> = Vec::new();
+            for raw in &raw_ids {
+                if let Some(id) = raw_to_id.get(raw) {
+                    if outcome.valid.contains(id) {
+                        valid_strs.push(raw.clone());
+                    } else {
+                        invalid_strs.push(raw.clone());
+                    }
+                }
+            }
+            invalid_strs.extend(parse_failed);
+            modify_confirmation = Some(ModifyAckDeadlineConfirmation {
+                ack_ids: valid_strs,
+                invalid_ack_ids: invalid_strs,
+                temporary_failed_ack_ids: Vec::new(),
+            });
+        }
 
         log::debug!(
             "{}: modified {} deadlines {}",
@@ -649,8 +739,14 @@ async fn handle_streaming_pull_request(
         );
     }
 
-    // We never actually return any responses, but it helps with the necessary type inference
-    // for the async stream.
+    if ack_confirmation.is_some() || modify_confirmation.is_some() {
+        return Ok(Some(StreamingPullResponse {
+            received_messages: Vec::new(),
+            acknowledge_confirmation: ack_confirmation,
+            modify_ack_deadline_confirmation: modify_confirmation,
+            subscription_properties: None,
+        }));
+    }
     Ok(None)
 }
 

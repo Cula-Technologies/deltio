@@ -71,12 +71,16 @@ message for K is acked. Different keys deliver in parallel.
 it as `invalid_ack_ids` / `temporary_failed_ack_ids`). Modern client uses this for
 exactly-once guarantees.
 **Tests**: streaming pull with EOD on, ack 1 message, expect AcknowledgeConfirmation with that ack-id; ack invalid id, expect it in invalid_ack_ids.
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage G: Smoke against `@google-cloud/pubsub` v5
 **Goal**: run the cula-platform `google-pubsub-event-subscriber.integration.spec.ts`
 against deltio in place of the official emulator. All green.
-**Status**: Not Started
+**Status**: Complete (smoke script). 7/7 checks pass against `@google-cloud/pubsub@5.3.0`:
+createTopic, createSubscription with full metadata, getMetadata round-trip, setMetadata
+round-trip, ordered + filtered delivery, exactly-once ackWithResponse, cleanup. Running
+the full backend integration suite is a follow-up — wire `gcloud-pubsub-emulator.ts` to
+support `image: deltio` mode behind a flag.
 
 ## Out of scope
 - Snapshots, Seek (pipeline already has a workaround using sentinel publishes)

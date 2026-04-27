@@ -242,6 +242,12 @@ impl SubscriptionActor {
         let now = Instant::now();
         let deadline = now + self.info.ack_deadline;
         while let Some(message) = self.backlog.pop_front() {
+            // Drop messages whose retention window has elapsed. They never reach a subscriber.
+            if self.is_message_expired(&message, now) {
+                self.delivery_attempts.remove(&message.id);
+                continue;
+            }
+
             let ack_id = self.next_ack_id;
             self.next_ack_id = ack_id.next();
 
@@ -269,6 +275,16 @@ impl SubscriptionActor {
         }
 
         Ok(result)
+    }
+
+    /// Returns true if the message has aged past the configured `message_retention_duration`.
+    fn is_message_expired(&self, message: &TopicMessage, now: Instant) -> bool {
+        match self.info.message_retention_duration {
+            Some(retention) => {
+                now.saturating_duration_since(message.published_at_instant) >= retention
+            }
+            None => false,
+        }
     }
 
     /// Acknowledges messages that have been pulled.
@@ -468,8 +484,28 @@ impl SubscriptionActor {
 
     /// Handles messages whose retry backoff has elapsed by moving them to the backlog.
     fn handle_retry_ready(&mut self, ready: Vec<Arc<TopicMessage>>) {
-        log::debug!("{}: {} retry messages ready", &self.info.name, ready.len());
-        self.backlog.append(ready);
+        let now = Instant::now();
+        let total = ready.len();
+        let mut dropped = 0;
+        let live: Vec<_> = ready
+            .into_iter()
+            .filter(|m| {
+                if self.is_message_expired(m, now) {
+                    self.delivery_attempts.remove(&m.id);
+                    dropped += 1;
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect();
+        log::debug!(
+            "{}: {} retry messages ready ({} expired, dropped)",
+            &self.info.name,
+            total,
+            dropped
+        );
+        self.backlog.append(live);
         if !self.backlog.is_empty() {
             self.observer.notify_new_messages_available();
         }

@@ -161,8 +161,10 @@ impl TopicActor {
         &mut self,
         messages: Vec<TopicMessage>,
     ) -> Result<PublishMessagesResponse, PublishMessagesError> {
-        // Define the publish time as now.
+        // Define the publish time as now. Capture both the wall-clock and the tokio
+        // monotonic clock so retention TTL checks work deterministically under paused time.
         let publish_time = SystemTime::now();
+        let publish_instant = tokio::time::Instant::now();
 
         // We'll need to return the published message IDs.
         let mut message_ids = Vec::with_capacity(messages.len());
@@ -176,7 +178,7 @@ impl TopicActor {
             .map(|mut m| {
                 self.next_message_id += 1;
                 let message_id = MessageId::new(self.topic_internal_id, self.next_message_id);
-                m.publish(message_id, publish_time);
+                m.publish(message_id, publish_time, publish_instant);
                 message_ids.push(message_id);
 
                 Arc::new(m)

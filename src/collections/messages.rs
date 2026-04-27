@@ -62,7 +62,7 @@ mod tests {
 
         let iter = ids.iter().enumerate().map(|(i, id)| {
             let mut m = TopicMessage::new(vec![i as u8].into(), None);
-            m.publish(*id, std::time::SystemTime::now());
+            m.publish(*id, std::time::SystemTime::now(), tokio::time::Instant::now());
             Arc::new(m)
         });
 
@@ -101,7 +101,7 @@ mod tests {
     fn new_message(data_value: u8) -> Arc<TopicMessage> {
         let id = MessageId::new(1, rand::random());
         let mut message = TopicMessage::new(vec![data_value].into(), None);
-        message.publish(id, std::time::SystemTime::now());
+        message.publish(id, std::time::SystemTime::now(), tokio::time::Instant::now());
         Arc::new(message)
     }
 }

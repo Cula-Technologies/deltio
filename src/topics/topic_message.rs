@@ -3,12 +3,16 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::time::SystemTime;
+use tokio::time::Instant;
 
 /// Represents a published message to a topic.
 #[derive(Debug)]
 pub struct TopicMessage {
     pub id: MessageId,
     pub published_at: SystemTime,
+    /// Tokio-clock companion to `published_at`. Used for time-based eviction so that paused
+    /// time in tests advances retention checks deterministically.
+    pub published_at_instant: Instant,
     pub data: Bytes,
     pub attributes: Option<HashMap<String, String>>,
 }
@@ -21,13 +25,15 @@ impl TopicMessage {
             attributes,
             id: MessageId::default(),
             published_at: SystemTime::UNIX_EPOCH,
+            published_at_instant: Instant::now(),
         }
     }
 
     /// Sets the post-publish values.
-    pub fn publish(&mut self, id: MessageId, published_at: SystemTime) {
+    pub fn publish(&mut self, id: MessageId, published_at: SystemTime, instant: Instant) {
         self.id = id;
         self.published_at = published_at;
+        self.published_at_instant = instant;
     }
 }
 

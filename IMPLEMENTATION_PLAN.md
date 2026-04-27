@@ -39,12 +39,12 @@ correctly through Get/List.
 8. Missing subscription → `NOT_FOUND`.
 9. Create round-trip: setting `enable_message_ordering`/`enable_exactly_once_delivery`/`filter`/`message_retention_duration` on Create returns them on Get.
 
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage B: `message_retention_duration` enforcement
 **Goal**: messages older than retention duration are evicted from backlog and outstanding.
 **Tests**: publish msg, fast-forward time past retention (using `tokio::time::pause`), assert message no longer pulled.
-**Status**: Not Started
+**Status**: In Progress
 
 ## Stage C: Server-side filter parser + evaluator
 **Goal**: `attributes.k = "v"`, `attributes.k != "v"`, `hasPrefix(attributes.k, "v")`,

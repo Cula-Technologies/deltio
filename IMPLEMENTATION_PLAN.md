@@ -82,6 +82,30 @@ round-trip, ordered + filtered delivery, exactly-once ackWithResponse, cleanup. 
 the full backend integration suite is a follow-up — wire `gcloud-pubsub-emulator.ts` to
 support `image: deltio` mode behind a flag.
 
+## Stage H: UpdateTopic + topic metadata round-trip
+**Goal**: `TopicInfo` carries `labels` and `message_retention_duration`; UpdateTopic
+accepts the field-mask paths a real client would send (`labels`,
+`message_retention_duration`); Get/Create round-trip both. Retention is stored
+pass-through; subscriptions enforce their own retention already.
+**Status**: Complete
+
+## Stage I: ListTopicSnapshots returns empty
+**Goal**: clients call ListTopicSnapshots during cleanup. Validate the topic exists
+and return an empty page rather than `Unimplemented`.
+**Status**: Complete
+
+## Stage J: DetachSubscription
+**Goal**: detached subscriptions reject Pull/StreamingPull with FAILED_PRECONDITION
+but stay visible via Get/List with `detached: true`. Detaching drops retained
+messages. Idempotent. Missing subscription → NOT_FOUND.
+**Status**: Complete
+
+## Stage K: ModifyPushConfig
+**Goal**: swap a subscription's push config in-place and re-register with the push
+loop. Empty endpoint or absent config switches to pull mode. Reuses the
+CreateSubscription endpoint validator so non-http endpoints are rejected.
+**Status**: Complete
+
 ## Out of scope
 - Snapshots, Seek (pipeline already has a workaround using sentinel publishes)
 - Schemas, IAM, BigQuery/Cloud Storage subs

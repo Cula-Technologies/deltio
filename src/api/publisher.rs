@@ -2,14 +2,12 @@ use crate::api::page_token::PageToken;
 use crate::api::parser;
 use crate::pubsub_proto::publisher_server::Publisher;
 use crate::pubsub_proto::*;
-use crate::topics::TopicName;
 use crate::topics::topic_manager::TopicManager;
 use crate::topics::{
-    CreateTopicError, DeleteError, GetTopicError, ListSubscriptionsError, ListTopicsError,
-    PublishMessagesError,
+    CreateTopicError, DeleteError, GetTopicError, GetTopicInfoError, ListSubscriptionsError,
+    ListTopicsError, PublishMessagesError, TopicInfo, TopicName,
 };
 use crate::tracing::ActivitySpan;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -44,34 +42,54 @@ impl Publisher for PublisherService {
         let topic_name = parser::parse_topic_name(&request.name)?;
         let topic_name_str = topic_name.to_string();
 
-        self.topic_manager
-            .create_topic(topic_name)
-            .map_err(|e| match e {
-                CreateTopicError::AlreadyExists => Status::already_exists("Topic already exists"),
-                CreateTopicError::Closed => conflict(),
-            })?;
+        let message_retention_duration = request
+            .message_retention_duration
+            .as_ref()
+            .map(parser::parse_message_retention_duration)
+            .transpose()?;
 
-        let response = Topic {
-            name: topic_name_str.clone(),
-            kms_key_name: String::default(),
-            labels: HashMap::default(),
-            message_retention_duration: None,
-            satisfies_pzs: false,
-            schema_settings: None,
-            message_storage_policy: None,
+        let info = TopicInfo {
+            name: topic_name,
+            labels: request.labels.clone(),
+            message_retention_duration,
         };
 
+        let topic = self.topic_manager.create_topic(info).map_err(|e| match e {
+            CreateTopicError::AlreadyExists => Status::already_exists("Topic already exists"),
+            CreateTopicError::Closed => conflict(),
+        })?;
+
+        let info = topic.get_info().await.map_err(|e| match e {
+            GetTopicInfoError::Closed => conflict(),
+        })?;
+
         log::debug!("{}: creating topic {}", topic_name_str, start);
-        Ok(Response::new(response))
+        Ok(Response::new(map_to_topic_resource(&info)))
     }
 
     async fn update_topic(
         &self,
-        _request: Request<UpdateTopicRequest>,
+        request: Request<UpdateTopicRequest>,
     ) -> Result<Response<Topic>, Status> {
-        Err(Status::unimplemented(
-            "UpdateTopic is not implemented in Deltio",
-        ))
+        let start = ActivitySpan::start();
+        let request = request.into_inner();
+        let proto_topic = request
+            .topic
+            .ok_or_else(|| Status::invalid_argument("topic must be specified"))?;
+        let mask = request
+            .update_mask
+            .ok_or_else(|| Status::invalid_argument("update_mask must be specified"))?;
+
+        let topic_name = parser::parse_topic_name(&proto_topic.name)?;
+        let update = parser::parse_topic_update(&proto_topic, &mask.paths)?;
+
+        let topic = self.get_topic_internal(&topic_name).await?;
+        let info = topic.update_info(update).await.map_err(|e| match e {
+            GetTopicInfoError::Closed => conflict(),
+        })?;
+
+        log::debug!("{}: updating topic {}", &topic_name, start);
+        Ok(Response::new(map_to_topic_resource(&info)))
     }
 
     async fn publish(
@@ -122,17 +140,12 @@ impl Publisher for PublisherService {
         let topic_name = parser::parse_topic_name(&request.topic)?;
 
         let topic = self.get_topic_internal(&topic_name).await?;
+        let info = topic.get_info().await.map_err(|e| match e {
+            GetTopicInfoError::Closed => conflict(),
+        })?;
 
         log::debug!("{}: getting topic {}", &topic_name, start);
-        Ok(Response::new(Topic {
-            name: topic.name.to_string(),
-            labels: Default::default(),
-            message_storage_policy: None,
-            kms_key_name: "".to_string(),
-            schema_settings: None,
-            satisfies_pzs: false,
-            message_retention_duration: None,
-        }))
+        Ok(Response::new(map_to_topic_resource(&info)))
     }
 
     async fn list_topics(
@@ -151,19 +164,14 @@ impl Publisher for PublisherService {
                 ListTopicsError::Closed => conflict(),
             })?;
 
-        let topics = page
-            .topics
-            .into_iter()
-            .map(|topic| Topic {
-                name: topic.name.to_string(),
-                labels: HashMap::default(),
-                message_storage_policy: None,
-                kms_key_name: "".to_string(),
-                schema_settings: None,
-                satisfies_pzs: false,
-                message_retention_duration: None,
-            })
-            .collect();
+        let topics =
+            futures::future::try_join_all(page.topics.into_iter().map(|topic| async move {
+                let info = topic.get_info().await.map_err(|e| match e {
+                    GetTopicInfoError::Closed => conflict(),
+                })?;
+                Ok::<Topic, Status>(map_to_topic_resource(&info))
+            }))
+            .await?;
 
         let page_token = page.offset.map(|v| PageToken::new(v).encode());
         let response = ListTopicsResponse {
@@ -270,4 +278,22 @@ fn topic_not_found(topic_name: &TopicName) -> Status {
         "Resource not found (resource={}).",
         &topic_name.topic_id()
     ))
+}
+
+/// Maps a [`TopicInfo`] to the proto `Topic` resource.
+fn map_to_topic_resource(info: &TopicInfo) -> Topic {
+    Topic {
+        name: info.name.to_string(),
+        labels: info.labels.clone(),
+        message_storage_policy: None,
+        kms_key_name: String::default(),
+        schema_settings: None,
+        satisfies_pzs: false,
+        message_retention_duration: info.message_retention_duration.map(|d| {
+            prost_types::Duration {
+                seconds: d.as_secs() as i64,
+                nanos: d.subsec_nanos() as i32,
+            }
+        }),
+    }
 }

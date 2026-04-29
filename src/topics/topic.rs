@@ -6,7 +6,9 @@ use crate::topics::topic_actor::{PublishMessagesResponse, TopicActor, TopicReque
 use crate::topics::topic_manager::TopicManagerDelegate;
 use crate::topics::{TopicMessage, TopicName};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
 /// The `Topic` that we interact with.
@@ -29,6 +31,25 @@ pub struct Topic {
 pub struct TopicInfo {
     /// The name of the topic.
     pub name: TopicName,
+
+    /// User-defined labels for the topic.
+    pub labels: HashMap<String, String>,
+
+    /// How long messages published to the topic are retained, before
+    /// being evicted from any subscription's backlog. Pass-through; not enforced
+    /// at the topic level — subscriptions enforce their own retention.
+    pub message_retention_duration: Option<Duration>,
+}
+
+/// A partial update to a [`TopicInfo`]. Fields that are `Some(_)` will overwrite
+/// the corresponding fields on the info; fields that are `None` are left unchanged.
+///
+/// `message_retention_duration` is unwrapped (`Option<Option<Duration>>`) so callers
+/// can distinguish "leave alone" (`None`) from "clear retention" (`Some(None)`).
+#[derive(Debug, Clone, Default)]
+pub struct TopicUpdate {
+    pub labels: Option<HashMap<String, String>>,
+    pub message_retention_duration: Option<Option<Duration>>,
 }
 
 impl Topic {
@@ -112,6 +133,26 @@ impl Topic {
         recv.await.map_err(|_| RemoveSubscriptionError::Closed)?
     }
 
+    /// Returns a clone of the topic's info.
+    pub async fn get_info(&self) -> Result<TopicInfo, GetTopicInfoError> {
+        let (responder, recv) = oneshot::channel();
+        self.sender
+            .send(TopicRequest::GetInfo { responder })
+            .await
+            .map_err(|_| GetTopicInfoError::Closed)?;
+        recv.await.map_err(|_| GetTopicInfoError::Closed)?
+    }
+
+    /// Applies a partial update to the topic's info. Returns the updated info.
+    pub async fn update_info(&self, update: TopicUpdate) -> Result<TopicInfo, GetTopicInfoError> {
+        let (responder, recv) = oneshot::channel();
+        self.sender
+            .send(TopicRequest::UpdateInfo { update, responder })
+            .await
+            .map_err(|_| GetTopicInfoError::Closed)?;
+        recv.await.map_err(|_| GetTopicInfoError::Closed)?
+    }
+
     /// Deletes the topic.
     pub async fn delete(&self) -> Result<(), DeleteError> {
         let (send, recv) = oneshot::channel();
@@ -147,8 +188,22 @@ impl Ord for Topic {
 }
 
 impl TopicInfo {
-    /// Creates a new `TopicInfo`.
+    /// Creates a new `TopicInfo` with no labels or retention.
     pub fn new(name: TopicName) -> Self {
-        Self { name }
+        Self {
+            name,
+            labels: HashMap::new(),
+            message_retention_duration: None,
+        }
+    }
+
+    /// Applies a [`TopicUpdate`] to this info, mutating fields that are `Some`.
+    pub fn apply_update(&mut self, update: TopicUpdate) {
+        if let Some(labels) = update.labels {
+            self.labels = labels;
+        }
+        if let Some(mrd) = update.message_retention_duration {
+            self.message_retention_duration = mrd;
+        }
     }
 }

@@ -62,3 +62,10 @@ pub enum DeleteError {
     #[error("The topic is closed")]
     Closed,
 }
+
+/// Errors for reading or updating topic info.
+#[derive(thiserror::Error, Debug)]
+pub enum GetTopicInfoError {
+    #[error("The topic is closed")]
+    Closed,
+}

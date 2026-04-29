@@ -36,10 +36,10 @@ impl TopicManager {
     }
 
     /// Create a new topic.
-    pub fn create_topic(&self, name: TopicName) -> Result<Arc<Topic>, CreateTopicError> {
+    pub fn create_topic(&self, info: TopicInfo) -> Result<Arc<Topic>, CreateTopicError> {
         let delegate = TopicManagerDelegate::new(Arc::clone(&self.state));
         let mut state = self.state.write();
-        state.create_topic(name, delegate)
+        state.create_topic(info, delegate)
     }
 
     /// Gets a topic.
@@ -116,14 +116,14 @@ impl State {
     /// This is implemented here for interior mutability.
     pub fn create_topic(
         &mut self,
-        name: TopicName,
+        info: TopicInfo,
         delegate: TopicManagerDelegate,
     ) -> Result<Arc<Topic>, CreateTopicError> {
-        if let Entry::Vacant(entry) = self.topics.entry(name.clone()) {
-            let topic_info = TopicInfo::new(name);
+        let name = info.name.clone();
+        if let Entry::Vacant(entry) = self.topics.entry(name) {
             self.next_id += 1;
             let internal_id = self.next_id;
-            let topic = Arc::new(Topic::new(delegate, topic_info, internal_id));
+            let topic = Arc::new(Topic::new(delegate, info, internal_id));
 
             entry.insert(Arc::clone(&topic));
             return Ok(topic);

@@ -1,10 +1,10 @@
 use crate::paging::Paging;
 use crate::subscriptions::paging::SubscriptionsPage;
 use crate::subscriptions::{PostMessagesError, Subscription, SubscriptionName};
-use crate::topics::TopicInfo;
 use crate::topics::errors::*;
 use crate::topics::topic_manager::TopicManagerDelegate;
 use crate::topics::topic_message::{MessageId, TopicMessage};
+use crate::topics::{TopicInfo, TopicUpdate};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
@@ -35,6 +35,15 @@ pub enum TopicRequest {
 
     Delete {
         responder: oneshot::Sender<Result<(), DeleteError>>,
+    },
+
+    GetInfo {
+        responder: oneshot::Sender<Result<TopicInfo, GetTopicInfoError>>,
+    },
+
+    UpdateInfo {
+        update: TopicUpdate,
+        responder: oneshot::Sender<Result<TopicInfo, GetTopicInfoError>>,
     },
 }
 
@@ -126,6 +135,15 @@ impl TopicActor {
             TopicRequest::ListSubscriptions { paging, responder } => {
                 let result = self.list_subscriptions(paging);
                 let _ = responder.send(result);
+            }
+
+            TopicRequest::GetInfo { responder } => {
+                let _ = responder.send(Ok(self.info.clone()));
+            }
+
+            TopicRequest::UpdateInfo { update, responder } => {
+                self.info.apply_update(update);
+                let _ = responder.send(Ok(self.info.clone()));
             }
         }
     }

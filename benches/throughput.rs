@@ -4,7 +4,7 @@ use deltio::push::PushSubscriptionsRegistry;
 use deltio::subscriptions::subscription_manager::SubscriptionManager;
 use deltio::subscriptions::{SubscriptionInfo, SubscriptionName};
 use deltio::topics::topic_manager::TopicManager;
-use deltio::topics::{TopicMessage, TopicName};
+use deltio::topics::{TopicInfo, TopicMessage, TopicName};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,7 +51,10 @@ fn bench_publish(c: &mut Criterion) {
     let harness = BenchHarness::new();
     let _guard = harness.rt.enter();
     let topic_name = TopicName::new("bench", "publish-topic");
-    let topic = harness.topic_manager.create_topic(topic_name).unwrap();
+    let topic = harness
+        .topic_manager
+        .create_topic(TopicInfo::new(topic_name))
+        .unwrap();
 
     let mut group = c.benchmark_group("publish");
     for (count, size) in [(1, 256), (10, 256), (100, 256), (100, 1024), (100, 65536)] {
@@ -76,7 +79,10 @@ fn bench_publish_with_subscriptions(c: &mut Criterion) {
     let harness = BenchHarness::new();
     let _guard = harness.rt.enter();
     let topic_name = TopicName::new("bench", "fan-out-topic");
-    let topic = harness.topic_manager.create_topic(topic_name).unwrap();
+    let topic = harness
+        .topic_manager
+        .create_topic(TopicInfo::new(topic_name))
+        .unwrap();
 
     // Create multiple subscriptions to test fan-out cost.
     for i in 0..5 {
@@ -111,7 +117,10 @@ fn bench_publish_then_pull(c: &mut Criterion) {
     let harness = BenchHarness::new();
     let _guard = harness.rt.enter();
     let topic_name = TopicName::new("bench", "pull-topic");
-    let topic = harness.topic_manager.create_topic(topic_name).unwrap();
+    let topic = harness
+        .topic_manager
+        .create_topic(TopicInfo::new(topic_name))
+        .unwrap();
 
     let sub_name = SubscriptionName::new("bench", "pull-sub");
     let info = SubscriptionInfo::new_with_defaults(sub_name);
@@ -152,7 +161,10 @@ fn bench_publish_pull_ack(c: &mut Criterion) {
     let harness = BenchHarness::new();
     let _guard = harness.rt.enter();
     let topic_name = TopicName::new("bench", "ack-topic");
-    let topic = harness.topic_manager.create_topic(topic_name).unwrap();
+    let topic = harness
+        .topic_manager
+        .create_topic(TopicInfo::new(topic_name))
+        .unwrap();
 
     let sub_name = SubscriptionName::new("bench", "ack-sub");
     let info = SubscriptionInfo::new_with_defaults(sub_name);

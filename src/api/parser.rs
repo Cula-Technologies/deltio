@@ -3,13 +3,13 @@ use crate::paging::Paging;
 use crate::pubsub_proto::push_config::AuthenticationMethod;
 use crate::pubsub_proto::{
     DeadLetterPolicy as DeadLetterPolicyProto, PubsubMessage, PushConfig as PushConfigProto,
-    RetryPolicy as RetryPolicyProto, Subscription as SubscriptionProto,
+    RetryPolicy as RetryPolicyProto, Subscription as SubscriptionProto, Topic as TopicProto,
 };
 use crate::subscriptions::{
     AckDeadline, AckId, AckIdParseError, DeadLetterPolicy, DeadlineModification, PushConfig,
     PushConfigOidcToken, RetryPolicy, SubscriptionName, SubscriptionUpdate,
 };
-use crate::topics::{TopicMessage, TopicName};
+use crate::topics::{TopicMessage, TopicName, TopicUpdate};
 use bytes::Bytes;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -308,6 +308,64 @@ pub(crate) fn parse_subscription_update(
             "enable_exactly_once_delivery" => {
                 update.enable_exactly_once_delivery =
                     Some(subscription.enable_exactly_once_delivery);
+            }
+            _ => unreachable!("path validated above"),
+        }
+    }
+    Ok(update)
+}
+
+/// Field-mask paths supported on UpdateTopic. Anything else is rejected.
+const TOPIC_UPDATABLE_PATHS: &[&str] = &["labels", "message_retention_duration"];
+
+/// Field-mask paths that exist on `Topic` but cannot be updated post-create.
+const TOPIC_IMMUTABLE_PATHS: &[&str] = &[
+    "name",
+    "kms_key_name",
+    "schema_settings",
+    "message_storage_policy",
+    "satisfies_pzs",
+];
+
+/// Parses a `TopicUpdate` from the proto resource and field-mask paths. Validates
+/// that every path is supported and the values for those paths are well-formed.
+pub(crate) fn parse_topic_update(
+    topic: &TopicProto,
+    paths: &[String],
+) -> Result<TopicUpdate, Status> {
+    if paths.is_empty() {
+        return Err(Status::invalid_argument(
+            "update_mask must be specified and non-empty",
+        ));
+    }
+
+    let mut update = TopicUpdate::default();
+    for path in paths {
+        let path = path.as_str();
+        if TOPIC_IMMUTABLE_PATHS.contains(&path) {
+            return Err(Status::invalid_argument(format!(
+                "Field '{}' is not modifiable after creation",
+                path
+            )));
+        }
+        if !TOPIC_UPDATABLE_PATHS.contains(&path) {
+            return Err(Status::invalid_argument(format!(
+                "Field '{}' is not a valid update path",
+                path
+            )));
+        }
+        match path {
+            "labels" => {
+                update.labels = Some(topic.labels.clone());
+            }
+            "message_retention_duration" => {
+                update.message_retention_duration = Some(
+                    topic
+                        .message_retention_duration
+                        .as_ref()
+                        .map(parse_message_retention_duration)
+                        .transpose()?,
+                );
             }
             _ => unreachable!("path validated above"),
         }

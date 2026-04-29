@@ -30,7 +30,7 @@ async fn new_topic_and_filtered_subscription(
     let topic_id = Uuid::new_v4().to_string();
     let sub_id = Uuid::new_v4().to_string();
     let topic = topic_manager
-        .create_topic(TopicName::new(&project_id, &topic_id))
+        .create_topic(TopicInfo::new(TopicName::new(&project_id, &topic_id)))
         .unwrap();
 
     let mut info = SubscriptionInfo::new_with_defaults(Sn::new(&project_id, &sub_id));

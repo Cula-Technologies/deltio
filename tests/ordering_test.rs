@@ -25,7 +25,7 @@ async fn new_topic_and_ordered_subscription() -> (Arc<TopicManager>, Arc<Topic>,
     let topic_id = Uuid::new_v4().to_string();
     let sub_id = Uuid::new_v4().to_string();
     let topic = topic_manager
-        .create_topic(TopicName::new(&project_id, &topic_id))
+        .create_topic(TopicInfo::new(TopicName::new(&project_id, &topic_id)))
         .unwrap();
 
     let mut info = SubscriptionInfo::new_with_defaults(SubscriptionName::new(&project_id, &sub_id));
@@ -161,7 +161,10 @@ async fn ordering_disabled_treats_keyed_messages_as_unordered() {
     let subscription_manager = new_subscription_manager(&topic_manager);
     let project_id = Uuid::new_v4().to_string();
     let topic = topic_manager
-        .create_topic(TopicName::new(&project_id, &Uuid::new_v4().to_string()))
+        .create_topic(TopicInfo::new(TopicName::new(
+            &project_id,
+            &Uuid::new_v4().to_string(),
+        )))
         .unwrap();
     let info =
         SubscriptionInfo::new_with_defaults(SubscriptionName::new(&project_id, "no-ordering"));

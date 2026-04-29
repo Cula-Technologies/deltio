@@ -228,11 +228,18 @@ impl Publisher for PublisherService {
 
     async fn list_topic_snapshots(
         &self,
-        _request: Request<ListTopicSnapshotsRequest>,
+        request: Request<ListTopicSnapshotsRequest>,
     ) -> Result<Response<ListTopicSnapshotsResponse>, Status> {
-        Err(Status::unimplemented(
-            "ListTopic_snapshots is not implemented in Deltio",
-        ))
+        // Snapshots are not implemented in Deltio, but clients call this during cleanup
+        // and expect it to succeed. Validate the topic exists and return an empty page.
+        let request = request.get_ref();
+        let topic_name = parser::parse_topic_name(&request.topic)?;
+        self.get_topic_internal(&topic_name).await?;
+
+        Ok(Response::new(ListTopicSnapshotsResponse {
+            snapshots: Vec::new(),
+            next_page_token: String::default(),
+        }))
     }
 
     async fn delete_topic(

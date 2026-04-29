@@ -1,5 +1,6 @@
 use deltio::pubsub_proto::{
-    DeleteTopicRequest, GetTopicRequest, ListTopicSubscriptionsRequest, ListTopicsRequest, Topic,
+    DeleteTopicRequest, GetTopicRequest, ListTopicSnapshotsRequest, ListTopicSubscriptionsRequest,
+    ListTopicsRequest, Topic,
 };
 use deltio::subscriptions::SubscriptionName;
 use deltio::topics::TopicName;
@@ -222,6 +223,48 @@ async fn test_list_topic_subscriptions() {
 
     assert_eq!(page.subscriptions.len(), 0);
     assert_eq!(page.next_page_token, String::default());
+
+    server.dispose().await;
+}
+
+#[tokio::test]
+async fn test_list_topic_snapshots_returns_empty_for_existing_topic() {
+    let mut server = TestHost::start().await.unwrap();
+    let topic_name = TopicName::new("test", &Uuid::new_v4().to_string());
+    server.create_topic_with_name(&topic_name).await;
+
+    let response = server
+        .publisher
+        .list_topic_snapshots(ListTopicSnapshotsRequest {
+            topic: topic_name.to_string(),
+            page_size: 0,
+            page_token: String::default(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(response.snapshots.is_empty());
+    assert_eq!(response.next_page_token, String::default());
+
+    server.dispose().await;
+}
+
+#[tokio::test]
+async fn test_list_topic_snapshots_missing_topic_returns_not_found() {
+    let mut server = TestHost::start().await.unwrap();
+    let topic_name = TopicName::new("test", "does-not-exist");
+
+    let err = server
+        .publisher
+        .list_topic_snapshots(ListTopicSnapshotsRequest {
+            topic: topic_name.to_string(),
+            page_size: 0,
+            page_token: String::default(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
 
     server.dispose().await;
 }

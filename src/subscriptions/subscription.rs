@@ -276,6 +276,24 @@ impl Subscription {
         recv.await.map_err(|_| GetStatsError::Closed)?
     }
 
+    /// Replaces the subscription's push config. `None` (or an empty endpoint,
+    /// which the API layer normalises to `None`) switches the subscription to pull
+    /// mode and unregisters it from the push loop.
+    pub async fn modify_push_config(
+        &self,
+        push_config: Option<PushConfig>,
+    ) -> Result<(), GetInfoError> {
+        let (responder, recv) = oneshot::channel();
+        self.sender
+            .send(SubscriptionRequest::ModifyPushConfig {
+                push_config,
+                responder,
+            })
+            .await
+            .map_err(|_| GetInfoError::Closed)?;
+        recv.await.map_err(|_| GetInfoError::Closed)?
+    }
+
     /// Detaches the subscription from its topic. Pull and StreamingPull will return
     /// FAILED_PRECONDITION afterwards, but the subscription resource remains visible
     /// via Get/List with `detached: true`. Idempotent.

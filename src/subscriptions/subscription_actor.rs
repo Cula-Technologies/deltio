@@ -55,6 +55,10 @@ pub enum SubscriptionRequest {
     Detach {
         responder: oneshot::Sender<Result<(), GetInfoError>>,
     },
+    ModifyPushConfig {
+        push_config: Option<crate::subscriptions::PushConfig>,
+        responder: oneshot::Sender<Result<(), GetInfoError>>,
+    },
     GetStats {
         responder: oneshot::Sender<Result<SubscriptionStats, GetStatsError>>,
     },
@@ -235,6 +239,13 @@ impl SubscriptionActor {
             }
             SubscriptionRequest::Detach { responder } => {
                 let result = self.detach();
+                let _ = responder.send(result);
+            }
+            SubscriptionRequest::ModifyPushConfig {
+                push_config,
+                responder,
+            } => {
+                let result = self.modify_push_config(push_config);
                 let _ = responder.send(result);
             }
             SubscriptionRequest::GetStats { responder } => {
@@ -497,6 +508,18 @@ impl SubscriptionActor {
         self.requeue_messages(nacks).await;
 
         Ok(outcome)
+    }
+
+    /// Updates the subscription's push config and notifies the push registry.
+    /// `None` (or a config with an empty endpoint, which the API layer normalises to `None`)
+    /// switches the subscription to pull mode.
+    fn modify_push_config(
+        &mut self,
+        push_config: Option<crate::subscriptions::PushConfig>,
+    ) -> Result<(), GetInfoError> {
+        self.info.push_config = push_config.clone();
+        self.push_registry.set(self.info.name.clone(), push_config);
+        Ok(())
     }
 
     /// Marks the subscription as detached. Pull/StreamingPull will return

@@ -517,11 +517,30 @@ impl Subscriber for SubscriberService {
 
     async fn modify_push_config(
         &self,
-        _request: Request<ModifyPushConfigRequest>,
+        request: Request<ModifyPushConfigRequest>,
     ) -> Result<Response<()>, Status> {
-        Err(Status::unimplemented(
-            "ModifyPushConfig is not implemented in Deltio",
-        ))
+        let start = ActivitySpan::start();
+        let request = request.into_inner();
+        let subscription_name = parser::parse_subscription_name(&request.subscription)?;
+
+        // An absent or empty-endpoint push config means "switch to pull mode". Real Pub/Sub
+        // accepts both shapes; the parser otherwise rejects non-http endpoints up-front.
+        let push_config = match request.push_config {
+            None => None,
+            Some(pc) if pc.push_endpoint.trim().is_empty() => None,
+            Some(pc) => Some(parser::parse_push_config(&pc)?),
+        };
+
+        let subscription = get_subscription(&self.subscription_manager, &subscription_name)?;
+        subscription
+            .modify_push_config(push_config)
+            .await
+            .map_err(|e| match e {
+                GetInfoError::Closed => conflict(),
+            })?;
+
+        log::debug!("{}: modifying push config {}", &subscription_name, start);
+        Ok(Response::new(()))
     }
 
     async fn get_snapshot(

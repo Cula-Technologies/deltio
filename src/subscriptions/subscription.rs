@@ -67,6 +67,11 @@ pub struct SubscriptionInfo {
     /// Filter expression. Empty means no filtering.
     /// Immutable after creation.
     pub filter: Option<String>,
+
+    /// Whether the subscription has been detached from its topic. Detached
+    /// subscriptions reject Pull and StreamingPull with FAILED_PRECONDITION but
+    /// remain visible via Get/List.
+    pub detached: bool,
 }
 
 /// Result of an `acknowledge_messages` or `modify_ack_deadlines` call. Used by the
@@ -271,6 +276,18 @@ impl Subscription {
         recv.await.map_err(|_| GetStatsError::Closed)?
     }
 
+    /// Detaches the subscription from its topic. Pull and StreamingPull will return
+    /// FAILED_PRECONDITION afterwards, but the subscription resource remains visible
+    /// via Get/List with `detached: true`. Idempotent.
+    pub async fn detach(&self) -> Result<(), GetInfoError> {
+        let (responder, recv) = oneshot::channel();
+        self.sender
+            .send(SubscriptionRequest::Detach { responder })
+            .await
+            .map_err(|_| GetInfoError::Closed)?;
+        recv.await.map_err(|_| GetInfoError::Closed)?
+    }
+
     /// Deletes the subscription.
     pub async fn delete(&self) -> Result<(), DeleteError> {
         let (responder, recv) = oneshot::channel();
@@ -323,6 +340,7 @@ impl SubscriptionInfo {
             enable_message_ordering: false,
             enable_exactly_once_delivery: false,
             filter: None,
+            detached: false,
         }
     }
 
@@ -338,6 +356,7 @@ impl SubscriptionInfo {
             enable_message_ordering: false,
             enable_exactly_once_delivery: false,
             filter: None,
+            detached: false,
         }
     }
 

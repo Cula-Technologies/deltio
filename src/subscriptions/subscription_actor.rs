@@ -52,6 +52,9 @@ pub enum SubscriptionRequest {
     Delete {
         responder: oneshot::Sender<Result<(), DeleteError>>,
     },
+    Detach {
+        responder: oneshot::Sender<Result<(), GetInfoError>>,
+    },
     GetStats {
         responder: oneshot::Sender<Result<SubscriptionStats, GetStatsError>>,
     },
@@ -230,6 +233,10 @@ impl SubscriptionActor {
                 let result = self.delete().await;
                 let _ = responder.send(result);
             }
+            SubscriptionRequest::Detach { responder } => {
+                let result = self.detach();
+                let _ = responder.send(result);
+            }
             SubscriptionRequest::GetStats { responder } => {
                 let result = self.get_stats();
                 let _ = responder.send(result);
@@ -296,6 +303,9 @@ impl SubscriptionActor {
     ) -> Result<Vec<PulledMessage>, PullMessagesError> {
         if self.deleted {
             return Ok(Default::default());
+        }
+        if self.info.detached {
+            return Err(PullMessagesError::Detached);
         }
 
         let pending_keyed = self
@@ -487,6 +497,24 @@ impl SubscriptionActor {
         self.requeue_messages(nacks).await;
 
         Ok(outcome)
+    }
+
+    /// Marks the subscription as detached. Pull/StreamingPull will return
+    /// `Detached` afterwards, but the subscription resource stays alive.
+    /// Idempotent.
+    fn detach(&mut self) -> Result<(), GetInfoError> {
+        if self.info.detached {
+            return Ok(());
+        }
+        self.info.detached = true;
+        // Real Pub/Sub drops retained messages on detach.
+        self.outstanding.clear();
+        self.backlog.clear();
+        self.retry_queue.clear();
+        self.delivery_attempts.clear();
+        self.ordered_queues.clear();
+        self.keys_in_flight.clear();
+        Ok(())
     }
 
     /// Marks the subscription as deleted. Further requests will be no-ops.

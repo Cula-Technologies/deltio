@@ -50,6 +50,8 @@ pub enum PostMessagesError {
 pub enum PullMessagesError {
     #[error("The subscription is closed")]
     Closed,
+    #[error("The subscription is detached from its topic")]
+    Detached,
 }
 
 /// Errors for acknowledging messages.

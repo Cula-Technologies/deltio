@@ -62,7 +62,10 @@ impl Deltio {
     /// Creates a Tonic gRPC server builder with the
     /// Pub/Sub gRPC services registered.
     pub fn server_builder(&self) -> Router {
-        let publisher_service = PublisherService::new(Arc::clone(&self.topic_manager));
+        let publisher_service = PublisherService::new(
+            Arc::clone(&self.topic_manager),
+            Arc::clone(&self.subscription_manager),
+        );
         let subscriber_service = SubscriberService::new(
             Arc::clone(&self.topic_manager),
             Arc::clone(&self.subscription_manager),

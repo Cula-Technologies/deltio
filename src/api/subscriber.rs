@@ -402,6 +402,9 @@ impl Subscriber for SubscriberService {
         let info = subscription.get_info().await.map_err(|e| match e {
             GetInfoError::Closed => conflict(),
         })?;
+        if info.detached {
+            return Err(detached_status());
+        }
         let exactly_once_enabled = info.enable_exactly_once_delivery;
         let ordering_enabled = info.enable_message_ordering;
         let subscription_properties = SubscriptionProperties {
@@ -447,6 +450,7 @@ impl Subscriber for SubscriberService {
                         .await
                     {
                         Err(PullMessagesError::Closed) => return,
+                        Err(PullMessagesError::Detached) => return,
                         Ok(pulled) => pulled,
                     };
 
@@ -580,6 +584,7 @@ async fn pull_messages(
         .await
         .map_err(|e| match e {
             PullMessagesError::Closed => conflict(),
+            PullMessagesError::Detached => detached_status(),
         })?;
 
     // Map them to the protocol format.
@@ -840,7 +845,7 @@ fn map_to_subscription_resource(
                 nanos: rp.maximum_backoff.subsec_nanos() as i32,
             }),
         }),
-        detached: false,
+        detached: info.detached,
         enable_exactly_once_delivery: info.enable_exactly_once_delivery,
         topic_message_retention_duration: None,
         state: 0,
@@ -853,6 +858,13 @@ fn map_to_subscription_resource(
 #[inline]
 fn conflict() -> Status {
     Status::failed_precondition("The operation resulted in a conflict.")
+}
+
+/// Status returned when an operation is rejected because the subscription has
+/// been detached from its topic.
+#[inline]
+fn detached_status() -> Status {
+    Status::failed_precondition("Subscription is detached.")
 }
 
 /// Returns a status indicating that the resource was not found.

@@ -106,6 +106,7 @@ async fn pull_and_dispatch_messages(
         let page = match subscription.pull_messages(batch_size).await {
             Ok(page) => page,
             Err(PullMessagesError::Closed) => return,
+            Err(PullMessagesError::Detached) => return,
         };
 
         let semaphore = Arc::new(Semaphore::new(max_concurrency));

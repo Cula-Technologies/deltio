@@ -2,6 +2,8 @@ use crate::api::page_token::PageToken;
 use crate::api::parser;
 use crate::pubsub_proto::publisher_server::Publisher;
 use crate::pubsub_proto::*;
+use crate::subscriptions::subscription_manager::SubscriptionManager;
+use crate::subscriptions::{GetInfoError, GetSubscriptionError, SubscriptionName};
 use crate::topics::topic_manager::TopicManager;
 use crate::topics::{
     CreateTopicError, DeleteError, GetTopicError, GetTopicInfoError, ListSubscriptionsError,
@@ -13,11 +15,18 @@ use tonic::{Request, Response, Status};
 
 pub struct PublisherService {
     pub topic_manager: Arc<TopicManager>,
+    subscription_manager: Arc<SubscriptionManager>,
 }
 
 impl PublisherService {
-    pub fn new(topic_manager: Arc<TopicManager>) -> Self {
-        Self { topic_manager }
+    pub fn new(
+        topic_manager: Arc<TopicManager>,
+        subscription_manager: Arc<SubscriptionManager>,
+    ) -> Self {
+        Self {
+            topic_manager,
+            subscription_manager,
+        }
     }
 
     /// Gets the internal topic.
@@ -262,11 +271,26 @@ impl Publisher for PublisherService {
 
     async fn detach_subscription(
         &self,
-        _request: Request<DetachSubscriptionRequest>,
+        request: Request<DetachSubscriptionRequest>,
     ) -> Result<Response<DetachSubscriptionResponse>, Status> {
-        Err(Status::unimplemented(
-            "DetachSubscription is not implemented in Deltio",
-        ))
+        let start = ActivitySpan::start();
+        let request = request.get_ref();
+        let subscription_name = parser::parse_subscription_name(&request.subscription)?;
+
+        let subscription = self
+            .subscription_manager
+            .get_subscription(&subscription_name)
+            .map_err(|e| match e {
+                GetSubscriptionError::DoesNotExist => subscription_not_found(&subscription_name),
+                GetSubscriptionError::Closed => conflict(),
+            })?;
+
+        subscription.detach().await.map_err(|e| match e {
+            GetInfoError::Closed => conflict(),
+        })?;
+
+        log::debug!("{}: detaching subscription {}", &subscription_name, start);
+        Ok(Response::new(DetachSubscriptionResponse {}))
     }
 }
 
@@ -284,6 +308,14 @@ fn topic_not_found(topic_name: &TopicName) -> Status {
     Status::not_found(format!(
         "Resource not found (resource={}).",
         &topic_name.topic_id()
+    ))
+}
+
+#[inline]
+fn subscription_not_found(name: &SubscriptionName) -> Status {
+    Status::not_found(format!(
+        "Resource not found (resource={}).",
+        name.subscription_id()
     ))
 }
 

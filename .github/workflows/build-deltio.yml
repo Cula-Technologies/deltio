@@ -1,0 +1,96 @@
+name: Build Deltio Image
+
+# Builds this Cula fork of the Deltio Pub/Sub emulator and pushes it to the same
+# Google Artifact Registry as the rest of our service images. The provider-backend
+# e2e shards consume this image when `PUBSUB_EMULATOR_BACKEND=deltio` is set; the
+# runners already have GAR creds via the existing setup-project chain, so no
+# extra auth gymnastics are needed at consumption time.
+#
+# Triggers:
+# - On push to `cula/main` — keeps the `cula-main` image in sync with the fork.
+# - Manually via workflow_dispatch — builds whichever branch the run is
+#   dispatched on; override the published tag with the `tag` input.
+#
+# In both cases the build uses the commit that triggered the run (plain
+# checkout), so a feature branch can publish a test image before merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish (under <registry>/deltio:<tag>)"
+        required: true
+        default: cula-main
+  push:
+    branches:
+      - cula/main
+
+permissions:
+  contents: read
+  id-token: write
+  # Required for docker/build-push-action to write to the GitHub Actions
+  # cache (cache-to: type=gha). Without this, the cache writes silently
+  # fail and every multi-arch QEMU build redoes the full work.
+  actions: write
+
+env:
+  REGISTRY: europe-docker.pkg.dev
+  IMAGE_REPO: europe-docker.pkg.dev/dev-cula-technologies/docker-images/deltio
+  GOOGLE_CLOUD_KEY: ${{ secrets.DEV_GOOGLE_CLOUD_KEY }}
+
+concurrency:
+  group: build-deltio-${{ github.event.inputs.tag || 'cula-main' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Resolve build SHA
+        id: sha
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "short=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Google Artifact Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: _json_key
+          password: ${{ env.GOOGLE_CLOUD_KEY }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:${{ github.event.inputs.tag || 'cula-main' }}
+            ${{ env.IMAGE_REPO }}:cula-${{ steps.sha.outputs.short }}
+          cache-from: type=gha,scope=deltio
+          cache-to: type=gha,mode=max,scope=deltio
+
+      - name: Summary
+        run: |
+          {
+            echo "## Deltio image built"
+            echo ""
+            echo "Source SHA: \`${{ steps.sha.outputs.sha }}\`"
+            echo ""
+            echo "Tags pushed:"
+            echo "- \`${{ env.IMAGE_REPO }}:${{ github.event.inputs.tag || 'cula-main' }}\`"
+            echo "- \`${{ env.IMAGE_REPO }}:cula-${{ steps.sha.outputs.short }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

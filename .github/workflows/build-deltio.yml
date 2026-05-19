@@ -30,7 +30,7 @@ permissions:
   id-token: write
   # Required for docker/build-push-action to write to the GitHub Actions
   # cache (cache-to: type=gha). Without this, the cache writes silently
-  # fail and every multi-arch QEMU build redoes the full work.
+  # fail and every build redoes the full work.
   actions: write
 
 env:
@@ -57,9 +57,6 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "short=${SHA:0:7}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -75,7 +72,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ env.IMAGE_REPO }}:${{ github.event.inputs.tag || 'cula-main' }}

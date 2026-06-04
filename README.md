@@ -1,6 +1,6 @@
-# Deltio
+# Cula Deltio
 
-A Google Cloud Pub/Sub emulator alternative for local development.
+A Google Cloud Pub/Sub emulator written in Rust for local development.
 
 > ℹ️ **DISCLAIMER**: This project is not endorsed, sponsored, or affiliated with Google Cloud and/or the Rust Foundation.
 

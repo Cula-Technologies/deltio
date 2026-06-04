@@ -15,7 +15,7 @@ use crate::topics::{Topic, TopicMessage};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::{mpsc, oneshot};
 
 /// Represents a subscription.
@@ -304,6 +304,22 @@ impl Subscription {
             .await
             .map_err(|_| GetInfoError::Closed)?;
         recv.await.map_err(|_| GetInfoError::Closed)?
+    }
+
+    /// Seeks the subscription to a point in time. Messages published at or before `seek_time`
+    /// are dropped (acknowledged); messages published after it that are still retained in
+    /// memory are made available for redelivery. Seeking to the current time purges the
+    /// subscription.
+    pub async fn seek_to_time(&self, seek_time: SystemTime) -> Result<(), SeekError> {
+        let (responder, recv) = oneshot::channel();
+        self.sender
+            .send(SubscriptionRequest::Seek {
+                seek_time,
+                responder,
+            })
+            .await
+            .map_err(|_| SeekError::Closed)?;
+        recv.await.map_err(|_| SeekError::Closed)?
     }
 
     /// Deletes the subscription.

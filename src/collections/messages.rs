@@ -44,6 +44,11 @@ impl Messages {
         self.list.pop_front()
     }
 
+    /// Retains only the messages for which the predicate returns `true`, preserving order.
+    pub fn retain<F: FnMut(&Arc<TopicMessage>) -> bool>(&mut self, predicate: F) {
+        self.list.retain(predicate);
+    }
+
     /// Clears all the messages.
     pub fn clear(&mut self) {
         self.list.clear();

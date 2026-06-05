@@ -3,15 +3,15 @@ use deltio::pubsub_proto::publisher_client::PublisherClient;
 use deltio::pubsub_proto::subscriber_client::SubscriberClient;
 use deltio::pubsub_proto::{
     AcknowledgeRequest, DeadLetterPolicy as DeadLetterPolicyProto, ModifyAckDeadlineRequest,
-    PublishRequest, PubsubMessage, StreamingPullRequest, StreamingPullResponse, Subscription,
-    Topic,
+    PublishRequest, PubsubMessage, SeekRequest, StreamingPullRequest, StreamingPullResponse,
+    Subscription, Topic, seek_request,
 };
 use deltio::subscriptions::SubscriptionName;
 use deltio::topics::TopicName;
 use futures::FutureExt;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::Sender;
 use tokio::time::timeout;
@@ -235,6 +235,19 @@ impl TestHost {
             .acknowledge(AcknowledgeRequest {
                 ack_ids,
                 subscription: subscription_name.to_string(),
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Seeks the subscription to the given time, using an RPC call.
+    pub async fn seek_to_time(&mut self, subscription_name: &SubscriptionName, time: SystemTime) {
+        self.subscriber
+            .seek(SeekRequest {
+                subscription: subscription_name.to_string(),
+                target: Some(seek_request::Target::Time(prost_types::Timestamp::from(
+                    time,
+                ))),
             })
             .await
             .unwrap();

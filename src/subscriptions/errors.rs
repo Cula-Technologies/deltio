@@ -81,3 +81,10 @@ pub enum GetStatsError {
     #[error("The subscription is closed")]
     Closed,
 }
+
+/// Errors for seeking a subscription.
+#[derive(thiserror::Error, Debug)]
+pub enum SeekError {
+    #[error("The subscription is closed")]
+    Closed,
+}

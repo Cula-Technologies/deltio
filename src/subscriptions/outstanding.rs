@@ -171,6 +171,14 @@ impl OutstandingMessageTracker {
         self.notify.notify_waiters();
     }
 
+    /// Removes and returns all outstanding messages, leaving the tracker empty.
+    pub fn drain(&mut self) -> Vec<PulledMessage> {
+        self.expirations.clear();
+        let drained = self.messages.drain().map(|(_, message)| message).collect();
+        self.notify.notify_waiters();
+        drained
+    }
+
     /// Returns the amount of messages outstanding.
     pub fn len(&self) -> usize {
         self.messages.len()

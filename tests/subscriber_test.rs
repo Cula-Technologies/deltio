@@ -1,11 +1,12 @@
 use deltio::pubsub_proto::{
     DeleteSubscriptionRequest, GetSubscriptionRequest, ListSubscriptionsRequest, PublishRequest,
-    PubsubMessage, PullRequest, RetryPolicy as RetryPolicyProto, StreamingPullResponse,
+    PubsubMessage, PullRequest, RetryPolicy as RetryPolicyProto, SeekRequest,
+    StreamingPullResponse, seek_request,
 };
 use deltio::subscriptions::SubscriptionName;
 use deltio::topics::TopicName;
 use futures::StreamExt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use test_helpers::*;
 use tokio::time;
 use tonic::{Code, Status};
@@ -473,6 +474,109 @@ async fn test_rpc_pull() {
 
     let pull_response = pull_task.await.unwrap();
     assert_eq!(pull_response.received_messages.len(), 2);
+
+    server.dispose().await;
+}
+
+// The `return_immediately` field is deprecated in the proto,
+// but we need to specify it.
+#[allow(deprecated)]
+#[tokio::test]
+async fn test_seek_to_time_purges_subscription() {
+    let mut server = TestHost::start().await.unwrap();
+
+    // Create a topic and a subscription.
+    let topic_name = TopicName::new("test", "topic");
+    server.create_topic_with_name(&topic_name).await;
+    let subscription_name = SubscriptionName::new("test", "subscription");
+    server
+        .create_subscription_with_name(&topic_name, &subscription_name)
+        .await;
+
+    // Pull (waiting) so the published messages are guaranteed to have landed in the
+    // subscription — and become outstanding — before we seek.
+    let pull_task = tokio::spawn({
+        let mut subscriber = server.subscriber.clone();
+        let subscription = subscription_name.to_string();
+        async move {
+            subscriber
+                .pull(PullRequest {
+                    subscription,
+                    max_messages: 10,
+                    return_immediately: false,
+                })
+                .await
+                .unwrap()
+                .into_inner()
+        }
+    });
+
+    server
+        .publish_text_messages(&topic_name, vec!["Hello".into(), "World".into()])
+        .await;
+
+    let pull_response = pull_task.await.unwrap();
+    assert_eq!(pull_response.received_messages.len(), 2);
+
+    // Seek to a time after the messages were published — this purges the subscription.
+    server
+        .seek_to_time(
+            &subscription_name,
+            SystemTime::now() + Duration::from_secs(60),
+        )
+        .await;
+
+    // Nothing should be pullable anymore.
+    let response = server
+        .subscriber
+        .pull(PullRequest {
+            subscription: subscription_name.to_string(),
+            max_messages: 10,
+            return_immediately: true,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(response.received_messages.len(), 0);
+
+    server.dispose().await;
+}
+
+#[tokio::test]
+async fn test_seek_unsupported_targets() {
+    let mut server = TestHost::start().await.unwrap();
+
+    // Create a topic and a subscription.
+    let topic_name = TopicName::new("test", "topic");
+    server.create_topic_with_name(&topic_name).await;
+    let subscription_name = SubscriptionName::new("test", "subscription");
+    server
+        .create_subscription_with_name(&topic_name, &subscription_name)
+        .await;
+
+    // Seeking to a snapshot is not supported.
+    let status = server
+        .subscriber
+        .seek(SeekRequest {
+            subscription: subscription_name.to_string(),
+            target: Some(seek_request::Target::Snapshot(
+                "projects/test/snapshots/snap".to_string(),
+            )),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unimplemented);
+
+    // Seeking with no target is rejected.
+    let status = server
+        .subscriber
+        .seek(SeekRequest {
+            subscription: subscription_name.to_string(),
+            target: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::InvalidArgument);
 
     server.dispose().await;
 }

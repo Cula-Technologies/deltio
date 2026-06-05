@@ -1,6 +1,7 @@
 use crate::api::page_token::PageToken;
 use crate::api::parser;
 use crate::pubsub_proto::push_config::{AuthenticationMethod, OidcToken};
+use crate::pubsub_proto::seek_request;
 use crate::pubsub_proto::streaming_pull_response::{
     AcknowledgeConfirmation, ModifyAckDeadlineConfirmation, SubscriptionProperties,
 };
@@ -18,7 +19,7 @@ use crate::subscriptions::subscription_manager::SubscriptionManager;
 use crate::subscriptions::{
     AcknowledgeMessagesError, CreateSubscriptionError, DeleteError, Filter, GetInfoError,
     GetSubscriptionError, ListSubscriptionsError, ModifyDeadlineError, PullMessagesError,
-    PulledMessage, SubscriptionInfo, SubscriptionName,
+    PulledMessage, SeekError, SubscriptionInfo, SubscriptionName,
 };
 use crate::topics::GetTopicError;
 use crate::topics::topic_manager::TopicManager;
@@ -26,7 +27,7 @@ use crate::tracing::ActivitySpan;
 use futures::Stream;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
@@ -588,8 +589,37 @@ impl Subscriber for SubscriberService {
         ))
     }
 
-    async fn seek(&self, _request: Request<SeekRequest>) -> Result<Response<SeekResponse>, Status> {
-        Err(Status::unimplemented("Seek is not implemented in Deltio"))
+    async fn seek(&self, request: Request<SeekRequest>) -> Result<Response<SeekResponse>, Status> {
+        let request = request.into_inner();
+        let subscription_name = parser::parse_subscription_name(&request.subscription)?;
+        let subscription = get_subscription(&self.subscription_manager, &subscription_name)?;
+
+        // Only seek-to-time is supported. Snapshots are not implemented, and seeking with no
+        // target is an error (matching gcloud, which requires `--time`).
+        let seek_time = match request.target {
+            Some(seek_request::Target::Time(timestamp)) => SystemTime::try_from(timestamp)
+                .map_err(|_| Status::invalid_argument("Seek time is out of the valid range"))?,
+            Some(seek_request::Target::Snapshot(_)) => {
+                return Err(Status::unimplemented(
+                    "Seek to a snapshot is not supported in Deltio; only seek to a time is supported",
+                ));
+            }
+            None => {
+                return Err(Status::invalid_argument(
+                    "A seek target (time) must be specified",
+                ));
+            }
+        };
+
+        subscription
+            .seek_to_time(seek_time)
+            .await
+            .map_err(|e| match e {
+                SeekError::Closed => Status::internal("System is shutting down"),
+            })?;
+
+        log::debug!("{}: seek to time {:?}", &subscription_name, seek_time);
+        Ok(Response::new(SeekResponse {}))
     }
 }
 

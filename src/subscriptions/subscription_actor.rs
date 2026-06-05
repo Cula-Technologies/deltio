@@ -16,6 +16,7 @@ use futures::future::Shared;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Weak};
+use std::time::SystemTime;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::time::Instant;
 
@@ -61,6 +62,10 @@ pub enum SubscriptionRequest {
     },
     GetStats {
         responder: oneshot::Sender<Result<SubscriptionStats, GetStatsError>>,
+    },
+    Seek {
+        seek_time: SystemTime,
+        responder: oneshot::Sender<Result<(), SeekError>>,
     },
 }
 
@@ -251,6 +256,13 @@ impl SubscriptionActor {
             SubscriptionRequest::GetStats { responder } => {
                 let result = self.get_stats();
                 let _ = responder.send(result);
+            }
+            SubscriptionRequest::Seek {
+                seek_time,
+                responder,
+            } => {
+                self.seek_to_time(seek_time);
+                let _ = responder.send(Ok(()));
             }
         }
     }
@@ -742,6 +754,54 @@ impl SubscriptionActor {
         } else {
             self.backlog.append(std::iter::once(message));
         }
+    }
+
+    /// Seeks the subscription to a point in time, resetting its delivery state.
+    ///
+    /// Messages published at or before `seek_time` are dropped (treated as acknowledged);
+    /// messages published after it are kept and made available for redelivery. Seeking to
+    /// the current time therefore purges the subscription, while seeking to the past replays
+    /// the messages still retained in memory.
+    ///
+    /// Deltio does not retain acknowledged messages, so already-acked messages cannot be
+    /// restored — only messages still present (backlog, outstanding, or awaiting retry) are
+    /// affected. This is the operation behind the gRPC `Seek` with a `time` target.
+    fn seek_to_time(&mut self, seek_time: SystemTime) {
+        if self.deleted {
+            return;
+        }
+
+        // Pull everything out of the in-flight structures; seek resets all delivery state.
+        let outstanding = self.outstanding.drain();
+        let retrying = self.retry_queue.drain();
+        self.keys_in_flight.clear();
+        self.delivery_attempts.clear();
+
+        // Drop messages at or before the seek time from the available queues, keeping the
+        // newer ones in their original order.
+        self.backlog.retain(|m| m.published_at > seek_time);
+        self.ordered_queues.retain(|_, queue| {
+            queue.retain(|m| m.published_at > seek_time);
+            !queue.is_empty()
+        });
+
+        // Re-queue the previously in-flight messages that are newer than the seek time so
+        // they get redelivered. `requeue_one` routes them back to the right queue.
+        for pulled in outstanding {
+            let message = pulled.into_message();
+            if message.published_at > seek_time {
+                self.requeue_one(message);
+            }
+        }
+        for message in retrying {
+            if message.published_at > seek_time {
+                self.requeue_one(message);
+            }
+        }
+
+        // Wake any waiters: the outstanding count dropped and messages may now be available.
+        self.observer.notify_outstanding_freed();
+        self.observer.notify_new_messages_available();
     }
 }
 

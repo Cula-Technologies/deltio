@@ -5,7 +5,7 @@ use deltio::subscriptions::*;
 use deltio::topics::topic_manager::TopicManager;
 use deltio::topics::*;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 fn new_subscription_manager(topic_manager: &Arc<TopicManager>) -> SubscriptionManager {
@@ -127,6 +127,87 @@ async fn nack_messages() {
     let stats = subscription.get_stats().await.unwrap();
     assert_eq!(stats.outstanding_messages_count, 2);
     assert_eq!(stats.backlog_messages_count, 0);
+}
+
+#[tokio::test]
+async fn seek_to_now_purges_subscription() {
+    let topic_manager = Arc::new(TopicManager::new());
+    let subscription_manager = new_subscription_manager(&topic_manager);
+    let (topic, subscription) =
+        new_topic_and_subscription(&topic_manager, &subscription_manager).await;
+
+    // Subscribe to the notifier and publish messages.
+    let notified = subscription.messages_available();
+    topic
+        .publish_messages(vec![
+            TopicMessage::new(Bytes::from("meow"), None),
+            TopicMessage::new(Bytes::from("woof"), None),
+        ])
+        .await
+        .unwrap();
+    wait(notified).await;
+
+    // Pull one message so it becomes outstanding; the other stays in the backlog. This way
+    // the seek has to clear both the outstanding set and the backlog.
+    let pulled = subscription.pull_messages(1).await.unwrap();
+    assert_eq!(pulled.len(), 1);
+
+    let stats = subscription.get_stats().await.unwrap();
+    assert_eq!(stats.outstanding_messages_count, 1);
+    assert_eq!(stats.backlog_messages_count, 1);
+
+    // Seek to a point after every message was published — this purges the subscription.
+    let after_publish = SystemTime::now() + Duration::from_secs(60);
+    subscription.seek_to_time(after_publish).await.unwrap();
+
+    // Nothing is left.
+    let stats = subscription.get_stats().await.unwrap();
+    assert_eq!(stats.outstanding_messages_count, 0);
+    assert_eq!(stats.backlog_messages_count, 0);
+    assert_eq!(subscription.pull_messages(10).await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn seek_to_past_redelivers_in_memory_messages() {
+    let topic_manager = Arc::new(TopicManager::new());
+    let subscription_manager = new_subscription_manager(&topic_manager);
+    let (topic, subscription) =
+        new_topic_and_subscription(&topic_manager, &subscription_manager).await;
+
+    // Subscribe to the notifier and publish messages.
+    let notified = subscription.messages_available();
+    topic
+        .publish_messages(vec![
+            TopicMessage::new(Bytes::from("meow"), None),
+            TopicMessage::new(Bytes::from("woof"), None),
+        ])
+        .await
+        .unwrap();
+    wait(notified).await;
+
+    // Pull both messages so they are outstanding.
+    let pulled = subscription.pull_messages(10).await.unwrap();
+    assert_eq!(pulled.len(), 2);
+    let stats = subscription.get_stats().await.unwrap();
+    assert_eq!(stats.outstanding_messages_count, 2);
+
+    // Seek to the epoch: every message was published after it, so all are made available
+    // again for redelivery rather than dropped.
+    subscription.seek_to_time(UNIX_EPOCH).await.unwrap();
+
+    let stats = subscription.get_stats().await.unwrap();
+    assert_eq!(stats.outstanding_messages_count, 0);
+    assert_eq!(stats.backlog_messages_count, 2);
+
+    // The same messages can be pulled again.
+    let redelivered = subscription.pull_messages(10).await.unwrap();
+    assert_eq!(redelivered.len(), 2);
+    let mut data: Vec<Bytes> = redelivered
+        .iter()
+        .map(|m| m.message().data.clone())
+        .collect();
+    data.sort();
+    assert_eq!(data, vec![Bytes::from("meow"), Bytes::from("woof")]);
 }
 
 #[tokio::test]

@@ -104,6 +104,14 @@ impl RetryQueue {
         self.messages.clear();
         self.notify.notify_waiters();
     }
+
+    /// Removes and returns all scheduled messages, leaving the queue empty.
+    pub fn drain(&mut self) -> Vec<Arc<TopicMessage>> {
+        self.schedule.clear();
+        let drained = self.messages.drain().map(|(_, message)| message).collect();
+        self.notify.notify_waiters();
+        drained
+    }
 }
 
 #[cfg(test)]

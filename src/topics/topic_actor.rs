@@ -4,7 +4,7 @@ use crate::subscriptions::{PostMessagesError, Subscription, SubscriptionName};
 use crate::topics::errors::*;
 use crate::topics::topic_manager::TopicManagerDelegate;
 use crate::topics::topic_message::{MessageId, TopicMessage};
-use crate::topics::{TopicInfo, TopicUpdate};
+use crate::topics::{TopicInfo, TopicStats, TopicUpdate};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
@@ -45,6 +45,10 @@ pub enum TopicRequest {
         update: TopicUpdate,
         responder: oneshot::Sender<Result<TopicInfo, GetTopicInfoError>>,
     },
+
+    GetStats {
+        responder: oneshot::Sender<Result<TopicStats, GetStatsError>>,
+    },
 }
 
 /// Response for publishing messages.
@@ -76,6 +80,12 @@ pub struct TopicActor {
 
     /// Whether the topic has been deleted.
     deleted: bool,
+
+    /// The cumulative number of messages published to the topic.
+    published_count: u64,
+
+    /// The cumulative number of message data bytes published to the topic.
+    published_bytes: u64,
 }
 
 impl TopicActor {
@@ -93,6 +103,8 @@ impl TopicActor {
             next_message_id: 0,
             subscriptions: Default::default(),
             deleted: false,
+            published_count: 0,
+            published_bytes: 0,
         };
 
         tokio::spawn(async move {
@@ -145,7 +157,23 @@ impl TopicActor {
                 self.info.apply_update(update);
                 let _ = responder.send(Ok(self.info.clone()));
             }
+
+            TopicRequest::GetStats { responder } => {
+                let result = self.get_stats();
+                let _ = responder.send(result);
+            }
         }
+    }
+
+    /// Gets the stats for the topic.
+    fn get_stats(&self) -> Result<TopicStats, GetStatsError> {
+        Ok(TopicStats::new(
+            self.info.name.clone(),
+            self.messages.len(),
+            self.subscriptions.len(),
+            self.published_count,
+            self.published_bytes,
+        ))
     }
 
     fn list_subscriptions(
@@ -202,6 +230,10 @@ impl TopicActor {
                 Arc::new(m)
             })
             .collect::<Vec<_>>();
+
+        // Track the cumulative number (and size) of published messages.
+        self.published_count += message_ids.len() as u64;
+        self.published_bytes += messages.iter().map(|m| m.data.len() as u64).sum::<u64>();
 
         // Add them to the topic.
         self.messages.extend(messages.iter().map(Arc::clone));

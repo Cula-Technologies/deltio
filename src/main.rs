@@ -11,6 +11,14 @@ struct Cli {
     #[arg(short, long, value_name = "ADDR", default_value = "0.0.0.0:8085")]
     bind: SocketAddr,
 
+    /// The hostname + port for the Prometheus metrics endpoint (serves /metrics).
+    #[arg(long, value_name = "ADDR", default_value = "0.0.0.0:9091")]
+    metrics_bind: SocketAddr,
+
+    /// Disable the metrics HTTP endpoint.
+    #[arg(long)]
+    no_metrics: bool,
+
     /// The log level to use.
     #[arg(short, long, value_name = "LEVEL", default_value = "info")]
     log: LogLevelArg,
@@ -85,6 +93,18 @@ async fn main_core(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
             args.push_concurrency,
         )
         .run();
+
+    // Start the metrics endpoint unless disabled. It's auxiliary, so a bind
+    // failure is logged rather than taking down the emulator.
+    if !args.no_metrics {
+        let metrics_service = app.metrics_service();
+        let metrics_bind = args.metrics_bind;
+        tokio::spawn(async move {
+            if let Err(e) = deltio::metrics::serve(metrics_bind, metrics_service).await {
+                log::error!("Metrics server error on {metrics_bind}: {e}");
+            }
+        });
+    }
 
     // Start listening (TCP).
     let server_fut = server.serve_with_shutdown(args.bind, signal);

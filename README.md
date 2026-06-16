@@ -79,6 +79,49 @@ Deltio implements the core Pub/Sub API surface needed for local development and 
 
 Message ordering, exactly-once delivery, schemas, snapshots, seek, and topic/subscription updates are not implemented.
 
+# Metrics
+
+Deltio serves Prometheus metrics on a separate HTTP port (default `9091`), which is handy for asserting queue depth in tests and for observability.
+
+```bash
+$ curl http://localhost:9091/metrics
+```
+
+Use `--metrics-bind` to change the address, or `--no-metrics` to disable it:
+
+```bash
+$ deltio --metrics-bind 0.0.0.0:7000
+$ deltio --no-metrics
+```
+
+A `GET /healthz` endpoint is also served on the same port.
+
+Exposed metrics:
+
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `deltio_build_info` | gauge | `version` | Build information; value is always 1 |
+| `deltio_start_time_seconds` | gauge | | Unix timestamp at which the metrics service started |
+| `deltio_topics` | gauge | | Number of topics |
+| `deltio_subscriptions` | gauge | | Number of subscriptions |
+| `deltio_topic_retained_messages` | gauge | `topic` | Messages currently retained on the topic |
+| `deltio_topic_subscriptions` | gauge | `topic` | Subscriptions attached to the topic |
+| `deltio_topic_messages_published_total` | counter | `topic` | Messages published to the topic |
+| `deltio_topic_messages_published_bytes_total` | counter | `topic` | Message data bytes published to the topic |
+| `deltio_subscription_backlog_messages` | gauge | `subscription`, `topic` | Messages queued waiting to be delivered (includes ordered-key queues) |
+| `deltio_subscription_outstanding_messages` | gauge | `subscription`, `topic` | Messages delivered but not yet acknowledged |
+| `deltio_subscription_retry_messages` | gauge | `subscription`, `topic` | Messages waiting on retry backoff before redelivery |
+| `deltio_subscription_oldest_unacked_message_age_seconds` | gauge | `subscription`, `topic` | Age of the oldest unacknowledged message |
+| `deltio_subscription_messages_pulled_total` | counter | `subscription` | Messages delivered to consumers |
+| `deltio_subscription_messages_acked_total` | counter | `subscription` | Messages acknowledged |
+| `deltio_subscription_messages_nacked_total` | counter | `subscription` | Messages explicitly nacked |
+| `deltio_subscription_messages_expired_total` | counter | `subscription` | Messages redelivered after ack deadline expiry |
+| `deltio_subscription_messages_dead_lettered_total` | counter | `subscription` | Messages forwarded to a dead letter topic |
+| `deltio_push_dispatch_total` | counter | `result` | HTTP push dispatches by result (`success`/`failure`) |
+| `deltio_push_dispatch_duration_seconds` | histogram | | Duration of HTTP push dispatches |
+
+Gauge values are exact at scrape time (no sampling lag), so the backlog/outstanding gauges answer "how many messages are queued right now" directly.
+
 # Compiling from source
 
 Deltio is written in Rust, and requires a Protocol Buffers compiler. This is because the [official Google Cloud Pub/Sub protos](https://github.com/googleapis/googleapis/blob/master/google/pubsub/v1/pubsub.proto) are used to generate the server code.

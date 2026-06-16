@@ -1,5 +1,6 @@
 mod api;
 mod collections;
+pub mod metrics;
 pub mod paging;
 pub mod pubsub_proto;
 pub mod push;
@@ -19,6 +20,7 @@ use std::time::Duration;
 use tonic::transport::Server;
 use tonic::transport::server::Router;
 
+use crate::push::PushMetrics;
 use crate::push::PushSubscriptionsRegistry;
 use crate::push::push_loop::PushLoop;
 #[cfg(not(all(target_arch = "x86", target_os = "linux")))]
@@ -42,6 +44,10 @@ pub struct Deltio {
 
     /// The subscription manager, which manages Pub/Sub subscriptions.
     subscription_manager: Arc<SubscriptionManager>,
+
+    /// Metrics for HTTP push delivery, shared between the push loop (writer)
+    /// and the metrics endpoint (reader).
+    push_metrics: Arc<PushMetrics>,
 }
 
 impl Deltio {
@@ -56,6 +62,7 @@ impl Deltio {
                 push_subscriptions_registry,
                 topic_manager,
             )),
+            push_metrics: Arc::new(PushMetrics::new()),
         }
     }
 
@@ -76,6 +83,23 @@ impl Deltio {
             .add_service(SubscriberServer::new(subscriber_service))
     }
 
+    /// Creates a metrics service that collects from this instance's managers.
+    pub fn metrics_service(&self) -> Arc<crate::metrics::MetricsService> {
+        Arc::new(crate::metrics::MetricsService::new(
+            Arc::clone(&self.topic_manager),
+            Arc::clone(&self.subscription_manager),
+            Arc::clone(&self.push_metrics),
+        ))
+    }
+
+    /// Collects the current metrics and renders them as Prometheus text.
+    ///
+    /// Convenience used by tests and tooling; the metrics HTTP server calls the
+    /// same underlying collector.
+    pub async fn collect_metrics(&self) -> String {
+        self.metrics_service().render().await
+    }
+
     /// Creates the push loop.
     pub fn push_loop(&self, interval: Duration, max_concurrency: usize) -> PushLoop {
         PushLoop::new(
@@ -83,6 +107,7 @@ impl Deltio {
             max_concurrency,
             Arc::clone(&self.subscription_manager),
             self.push_subscriptions_registry.clone(),
+            Arc::clone(&self.push_metrics),
         )
     }
 }

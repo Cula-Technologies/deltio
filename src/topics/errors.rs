@@ -69,3 +69,10 @@ pub enum GetTopicInfoError {
     #[error("The topic is closed")]
     Closed,
 }
+
+/// Errors for getting topic stats.
+#[derive(thiserror::Error, Debug)]
+pub enum GetStatsError {
+    #[error("The topic is closed")]
+    Closed,
+}

@@ -7,7 +7,7 @@ use crate::subscriptions::retry_queue::RetryQueue;
 use crate::subscriptions::subscription_manager::SubscriptionManagerDelegate;
 use crate::subscriptions::{
     AckDeadline, AckId, AckOutcome, AcknowledgeMessagesError, DeadlineModification, Filter,
-    PulledMessage, SubscriptionInfo, SubscriptionStats, SubscriptionUpdate,
+    PulledMessage, SubscriptionCounters, SubscriptionInfo, SubscriptionStats, SubscriptionUpdate,
 };
 use crate::topics::topic_manager::TopicManager;
 use crate::topics::{MessageId, RemoveSubscriptionError, Topic, TopicMessage, TopicName};
@@ -125,6 +125,9 @@ pub(crate) struct SubscriptionActor {
     /// Set of ordering keys whose head message is currently outstanding. While a key is
     /// in this set, no further messages for that key may be delivered.
     keys_in_flight: HashSet<String>,
+
+    /// Cumulative message counters surfaced via `get_stats` (e.g. for metrics).
+    counters: SubscriptionCounters,
 }
 
 impl SubscriptionActor {
@@ -176,6 +179,7 @@ impl SubscriptionActor {
             compiled_filter,
             ordered_queues: HashMap::new(),
             keys_in_flight: HashSet::new(),
+            counters: SubscriptionCounters::default(),
         };
 
         tokio::spawn(async move {
@@ -435,6 +439,8 @@ impl SubscriptionActor {
             self.observer.notify_new_messages_available();
         }
 
+        self.counters.pulled += result.len() as u64;
+
         Ok(result)
     }
 
@@ -495,6 +501,8 @@ impl SubscriptionActor {
             self.observer.notify_new_messages_available();
         }
 
+        self.counters.acked += acked.len() as u64;
+
         Ok(outcome)
     }
 
@@ -517,6 +525,7 @@ impl SubscriptionActor {
         }
 
         let nacks = self.outstanding.modify(deadline_modifications);
+        self.counters.nacked += nacks.len() as u64;
         self.requeue_messages(nacks).await;
 
         Ok(outcome)
@@ -587,7 +596,22 @@ impl SubscriptionActor {
 
     /// Gets the stats for the subscription.
     fn get_stats(&mut self) -> Result<SubscriptionStats, GetStatsError> {
+        // Messages held in per-ordering-key queues are waiting to be delivered,
+        // so they count towards the backlog.
         let ordered_pending: usize = self.ordered_queues.values().map(|q| q.len()).sum();
+
+        // Age of the oldest outstanding message, saturating at zero.
+        let oldest_unacked_age_seconds = self
+            .outstanding
+            .oldest_published_at()
+            .and_then(|published_at| {
+                std::time::SystemTime::now()
+                    .duration_since(published_at)
+                    .ok()
+            })
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+
         let stats = SubscriptionStats::new(
             self.info.name.clone(),
             self.topic
@@ -595,7 +619,10 @@ impl SubscriptionActor {
                 .map(|t| t.name.clone())
                 .unwrap_or_else(TopicName::deleted),
             self.outstanding.len(),
-            self.backlog.len() + self.retry_queue.len() + ordered_pending,
+            self.backlog.len() + ordered_pending,
+            self.retry_queue.len(),
+            oldest_unacked_age_seconds,
+            self.counters.clone(),
         );
         Ok(stats)
     }
@@ -603,6 +630,7 @@ impl SubscriptionActor {
     /// Handles expired messages by re-queueing them (with retry backoff if configured).
     async fn handle_expired_messages(&mut self, expired: Vec<PulledMessage>) {
         log::debug!("{}: {} messages expired", &self.info.name, expired.len());
+        self.counters.expired += expired.len() as u64;
         self.requeue_messages(expired).await;
     }
 
@@ -668,6 +696,7 @@ impl SubscriptionActor {
 
         // Publish dead-lettered messages to the DLQ topic if configured.
         if !dead_letter_messages.is_empty() {
+            self.counters.dead_lettered += dead_letter_messages.len() as u64;
             self.try_publish_dead_lettered_messages(dead_letter_messages);
 
             // Clean up delivery attempts for dead-lettered messages.

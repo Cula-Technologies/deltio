@@ -28,6 +28,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "cargo"] }
+hyper = { version = "1", features = ["server", "http1"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["tokio"] }
 
 # MiMalloc does not currently cross-compile for `i686-unknown-linux-musl` target,
 # so we'll disable MiMalloc for x86 Linux for now.
@@ -38,9 +41,6 @@ mimalloc = { version = "0.1", default-features = false }
 uuid = { version = "1", features = ["v4", "fast-rng"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 rand = "0.8"
-hyper = { version = "1", features = ["server", "http1"] }
-http-body-util = "0.1"
-hyper-util = "0.1"
 criterion = { version = "0.5", features = ["async_tokio"] }
 
 [build-dependencies]

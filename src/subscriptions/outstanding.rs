@@ -189,6 +189,15 @@ impl OutstandingMessageTracker {
         self.messages.contains_key(ack_id)
     }
 
+    /// Returns the publish time of the oldest (earliest published) outstanding
+    /// message, or `None` when there are no outstanding messages.
+    pub fn oldest_published_at(&self) -> Option<std::time::SystemTime> {
+        self.messages
+            .values()
+            .map(|m| m.message().published_at)
+            .min()
+    }
+
     /// Polls for the next batch of expired messages.
     pub async fn poll_next_expired(&mut self) -> Option<Vec<PulledMessage>> {
         loop {

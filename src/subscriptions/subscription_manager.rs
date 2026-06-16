@@ -110,6 +110,13 @@ impl SubscriptionManager {
             .ok_or(GetSubscriptionError::DoesNotExist)
     }
 
+    /// Lists all subscriptions across all projects.
+    ///
+    /// Primarily used for collecting metrics.
+    pub fn list_all_subscriptions(&self) -> Vec<Arc<Subscription>> {
+        self.state.read().subscriptions.values().cloned().collect()
+    }
+
     /// Lists subscriptions.
     pub fn list_subscriptions_in_project(
         &self,

@@ -23,7 +23,8 @@ You can either:
 * Use Docker:
 
   ```bash
-  docker run -p 8085:8085 ghcr.io/jeffijoe/deltio:latest
+  # -p 8085: gRPC API, -p 9091: Prometheus /metrics (omit the second to skip metrics)
+  docker run -p 8085:8085 -p 9091:9091 ghcr.io/jeffijoe/deltio:latest
   ```
 
 # Running

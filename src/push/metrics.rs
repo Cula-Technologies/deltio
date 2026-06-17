@@ -37,9 +37,6 @@ pub struct PushMetrics {
 
     /// Sum of all observed durations, in microseconds.
     duration_sum_micros: AtomicU64,
-
-    /// Total number of observed durations.
-    duration_count: AtomicU64,
 }
 
 impl PushMetrics {
@@ -50,7 +47,6 @@ impl PushMetrics {
             dispatch_failure: AtomicU64::new(0),
             duration_buckets: std::array::from_fn(|_| AtomicU64::new(0)),
             duration_sum_micros: AtomicU64::new(0),
-            duration_count: AtomicU64::new(0),
         }
     }
 
@@ -70,19 +66,23 @@ impl PushMetrics {
         self.duration_buckets[bucket].fetch_add(1, Ordering::Relaxed);
         self.duration_sum_micros
             .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
-        self.duration_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Takes a consistent-enough snapshot of the current values for rendering.
+    /// Takes a snapshot of the current values for rendering.
+    ///
+    /// `duration_count` is derived from the bucket snapshot rather than read
+    /// from a separate atomic, so the histogram is internally consistent:
+    /// `_count` always equals the `+Inf` cumulative bucket even under
+    /// concurrent dispatch.
     pub fn snapshot(&self) -> PushMetricsSnapshot {
+        let duration_buckets: [u64; DURATION_BUCKETS_SECONDS.len()] =
+            std::array::from_fn(|i| self.duration_buckets[i].load(Ordering::Relaxed));
         PushMetricsSnapshot {
             dispatch_success: self.dispatch_success.load(Ordering::Relaxed),
             dispatch_failure: self.dispatch_failure.load(Ordering::Relaxed),
-            duration_buckets: std::array::from_fn(|i| {
-                self.duration_buckets[i].load(Ordering::Relaxed)
-            }),
+            duration_count: duration_buckets.iter().sum(),
+            duration_buckets,
             duration_sum_micros: self.duration_sum_micros.load(Ordering::Relaxed),
-            duration_count: self.duration_count.load(Ordering::Relaxed),
         }
     }
 }

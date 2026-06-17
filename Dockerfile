@@ -94,8 +94,8 @@ FROM scratch AS deltio
 # Copy the build artifact from the build stage
 COPY --from=build /deltio/target/release/deltio .
 
-# Expose the default port.
-EXPOSE 8085
+# Expose the gRPC port and the Prometheus metrics port.
+EXPOSE 8085 9091
 
 # Set the startup command to run the binary.
 CMD ["./deltio", "--bind", "0.0.0.0:8085"]

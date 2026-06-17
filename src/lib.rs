@@ -48,6 +48,10 @@ pub struct Deltio {
     /// Metrics for HTTP push delivery, shared between the push loop (writer)
     /// and the metrics endpoint (reader).
     push_metrics: Arc<PushMetrics>,
+
+    /// The metrics service. Built once so that `deltio_start_time_seconds`
+    /// reflects process construction and stays stable across scrapes.
+    metrics_service: Arc<crate::metrics::MetricsService>,
 }
 
 impl Deltio {
@@ -55,14 +59,22 @@ impl Deltio {
     pub fn new() -> Self {
         let push_subscriptions_registry = PushSubscriptionsRegistry::new();
         let topic_manager = Arc::new(TopicManager::new());
+        let subscription_manager = Arc::new(SubscriptionManager::new(
+            push_subscriptions_registry.clone(),
+            Arc::clone(&topic_manager),
+        ));
+        let push_metrics = Arc::new(PushMetrics::new());
+        let metrics_service = Arc::new(crate::metrics::MetricsService::new(
+            Arc::clone(&topic_manager),
+            Arc::clone(&subscription_manager),
+            Arc::clone(&push_metrics),
+        ));
         Self {
-            push_subscriptions_registry: push_subscriptions_registry.clone(),
-            topic_manager: Arc::clone(&topic_manager),
-            subscription_manager: Arc::new(SubscriptionManager::new(
-                push_subscriptions_registry,
-                topic_manager,
-            )),
-            push_metrics: Arc::new(PushMetrics::new()),
+            push_subscriptions_registry,
+            topic_manager,
+            subscription_manager,
+            push_metrics,
+            metrics_service,
         }
     }
 
@@ -83,13 +95,9 @@ impl Deltio {
             .add_service(SubscriberServer::new(subscriber_service))
     }
 
-    /// Creates a metrics service that collects from this instance's managers.
+    /// Returns the metrics service that collects from this instance's managers.
     pub fn metrics_service(&self) -> Arc<crate::metrics::MetricsService> {
-        Arc::new(crate::metrics::MetricsService::new(
-            Arc::clone(&self.topic_manager),
-            Arc::clone(&self.subscription_manager),
-            Arc::clone(&self.push_metrics),
-        ))
+        Arc::clone(&self.metrics_service)
     }
 
     /// Collects the current metrics and renders them as Prometheus text.
@@ -97,7 +105,7 @@ impl Deltio {
     /// Convenience used by tests and tooling; the metrics HTTP server calls the
     /// same underlying collector.
     pub async fn collect_metrics(&self) -> String {
-        self.metrics_service().render().await
+        self.metrics_service.render().await
     }
 
     /// Creates the push loop.

@@ -4,7 +4,7 @@ use crate::subscriptions::{Subscription, SubscriptionName};
 use crate::topics::errors::*;
 use crate::topics::topic_actor::{PublishMessagesResponse, TopicActor, TopicRequest};
 use crate::topics::topic_manager::TopicManagerDelegate;
-use crate::topics::{TopicMessage, TopicName};
+use crate::topics::{TopicMessage, TopicName, TopicStats};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -151,6 +151,17 @@ impl Topic {
             .await
             .map_err(|_| GetTopicInfoError::Closed)?;
         recv.await.map_err(|_| GetTopicInfoError::Closed)?
+    }
+
+    /// Gets stats for the topic.
+    pub async fn get_stats(&self) -> Result<TopicStats, GetStatsError> {
+        let (send, recv) = oneshot::channel();
+        let request = TopicRequest::GetStats { responder: send };
+        self.sender
+            .send(request)
+            .await
+            .map_err(|_| GetStatsError::Closed)?;
+        recv.await.map_err(|_| GetStatsError::Closed)?
     }
 
     /// Deletes the topic.

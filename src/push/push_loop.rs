@@ -1,4 +1,4 @@
-use crate::push::PushSubscriptionsRegistry;
+use crate::push::{PushMetrics, PushSubscriptionsRegistry};
 use crate::subscriptions::subscription_manager::SubscriptionManager;
 use crate::subscriptions::{
     DeadlineModification, GetSubscriptionError, PullMessagesError, PulledMessage, PushConfig,
@@ -11,7 +11,7 @@ use base64::Engine;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 /// Contains everything needed to run the push loop.
@@ -20,6 +20,7 @@ pub struct PushLoop {
     max_concurrency: usize,
     subscription_manager: Arc<SubscriptionManager>,
     push_registry: PushSubscriptionsRegistry,
+    metrics: Arc<PushMetrics>,
 }
 
 impl PushLoop {
@@ -29,12 +30,14 @@ impl PushLoop {
         max_concurrency: usize,
         subscription_manager: Arc<SubscriptionManager>,
         push_registry: PushSubscriptionsRegistry,
+        metrics: Arc<PushMetrics>,
     ) -> Self {
         Self {
             interval,
             max_concurrency,
             subscription_manager,
             push_registry,
+            metrics,
         }
     }
 
@@ -45,6 +48,7 @@ impl PushLoop {
             self.max_concurrency,
             self.subscription_manager,
             self.push_registry,
+            self.metrics,
         )
         .await
     }
@@ -56,6 +60,7 @@ pub async fn run(
     max_concurrency: usize,
     subscription_manager: Arc<SubscriptionManager>,
     push_registry: PushSubscriptionsRegistry,
+    metrics: Arc<PushMetrics>,
 ) {
     log::trace!(
         "Starting push loop (interval = {:?}, max_concurrency = {})",
@@ -84,6 +89,7 @@ pub async fn run(
                     push_config,
                     client.clone(),
                     max_concurrency,
+                    Arc::clone(&metrics),
                 ));
             }
         }
@@ -98,6 +104,7 @@ async fn pull_and_dispatch_messages(
     push_config: PushConfig,
     client: reqwest::Client,
     max_concurrency: usize,
+    metrics: Arc<PushMetrics>,
 ) {
     // Pull the subscription.
     let deleted_signal = subscription.deleted();
@@ -130,6 +137,7 @@ async fn pull_and_dispatch_messages(
                 pulled_message,
                 push_config.clone(),
                 client.clone(),
+                Arc::clone(&metrics),
             )
             .shared();
 
@@ -164,6 +172,7 @@ async fn dispatch_message(
     pulled_message: PulledMessage,
     push_config: PushConfig,
     client: reqwest::Client,
+    metrics: Arc<PushMetrics>,
 ) {
     let message = pulled_message.message();
     log::trace!(
@@ -171,6 +180,7 @@ async fn dispatch_message(
         &subscription.name,
         &push_config.endpoint
     );
+    let started_at = Instant::now();
     let result = client
         .request(reqwest::Method::POST, &push_config.endpoint)
         .header("Content-Type", "application/json;charset=utf8")
@@ -203,6 +213,8 @@ async fn dispatch_message(
             false
         }
     };
+
+    metrics.record(success, started_at.elapsed());
 
     if !success {
         let _ = subscription

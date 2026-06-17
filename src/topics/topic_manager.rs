@@ -52,6 +52,13 @@ impl TopicManager {
             .ok_or(GetTopicError::DoesNotExist)
     }
 
+    /// Lists all topics across all projects.
+    ///
+    /// Primarily used for collecting metrics.
+    pub fn list_all_topics(&self) -> Vec<Arc<Topic>> {
+        self.state.read().topics.values().cloned().collect()
+    }
+
     /// Lists topics.
     pub fn list_topics(
         &self,

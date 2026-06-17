@@ -1,4 +1,7 @@
+pub mod metrics;
 pub mod push_loop;
+
+pub use metrics::{PushMetrics, PushMetricsSnapshot};
 
 use crate::subscriptions::{PushConfig, SubscriptionName};
 use parking_lot::RwLock;

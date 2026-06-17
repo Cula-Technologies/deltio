@@ -30,7 +30,7 @@ permissions:
   id-token: write
   # Required for docker/build-push-action to write to the GitHub Actions
   # cache (cache-to: type=gha). Without this, the cache writes silently
-  # fail and every build redoes the full work.
+  # fail and every multi-arch build redoes the full work.
   actions: write
 
 env:
@@ -67,12 +67,16 @@ jobs:
           username: _json_key
           password: ${{ env.GOOGLE_CLOUD_KEY }}
 
+      # No QEMU setup: the build stage is pinned to the native build platform
+      # (`FROM --platform=$BUILDPLATFORM`) and cross-compiles each target with
+      # cargo-zigbuild, and the final stage is `FROM scratch`. No target-arch
+      # code is ever executed, so arm64 builds need no emulation.
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ env.IMAGE_REPO }}:${{ github.event.inputs.tag || 'cula-main' }}

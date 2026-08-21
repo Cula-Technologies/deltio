@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM rust:1.94 AS build
+FROM --platform=$BUILDPLATFORM rust:1.98 AS build
 
 # Install Protocol Buffers and curl.
 RUN apt-get update && apt-get install -y protobuf-compiler curl xz-utils

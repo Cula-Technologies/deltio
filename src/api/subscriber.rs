@@ -413,6 +413,13 @@ impl Subscriber for SubscriberService {
             message_ordering_enabled: ordering_enabled,
         };
 
+        // Clients that set `protocol_version >= 1` (google-cloud-pubsub v6 and up) run a
+        // keepalive watchdog: they ping the stream with an empty request every 30s and
+        // tear it down if the server sends nothing back within 15s. Answering those pings
+        // is what keeps an idle stream up. Older clients don't ping, so leaving this off
+        // for them preserves the previous behavior exactly.
+        let server_keepalives = request.protocol_version >= 1;
+
         log::debug!("{}: starting streaming pull {}", subscription_name, start);
 
         // Pulls messages and streams them to the client. Flow control: never deliver more
@@ -501,6 +508,7 @@ impl Subscriber for SubscriberService {
                         request,
                         Arc::clone(&subscription),
                         exactly_once_enabled,
+                        server_keepalives,
                     )
                     .await?;
 
@@ -650,10 +658,14 @@ async fn pull_messages(
 /// subscription has exactly-once delivery enabled, the returned response carries
 /// AcknowledgeConfirmation / ModifyAckDeadlineConfirmation describing which ack-ids the
 /// server processed and which it rejected.
+///
+/// When `server_keepalives` is set, a request that produces no other response still gets
+/// an empty one back, so the client's keepalive watchdog sees the stream is alive.
 async fn handle_streaming_pull_request(
     request: StreamingPullRequest,
     subscription: Arc<crate::subscriptions::Subscription>,
     exactly_once_enabled: bool,
+    server_keepalives: bool,
 ) -> Result<Option<StreamingPullResponse>, Status> {
     if !request.subscription.is_empty() {
         return Err(Status::invalid_argument(
@@ -670,6 +682,12 @@ async fn handle_streaming_pull_request(
     if request.max_outstanding_messages > 0 {
         return Err(Status::invalid_argument(
             "max_outstanding_messages must only be specified in the initial request.",
+        ));
+    }
+
+    if request.protocol_version != 0 {
+        return Err(Status::invalid_argument(
+            "protocol_version must only be specified in the initial request.",
         ));
     }
 
@@ -801,6 +819,19 @@ async fn handle_streaming_pull_request(
             subscription_properties: None,
         }));
     }
+
+    // Nothing to confirm. A client running the keepalive watchdog still needs to see a
+    // response — an empty one is enough to prove the stream is alive, and it's the same
+    // shape it already handles on the ack-confirmation path.
+    if server_keepalives {
+        return Ok(Some(StreamingPullResponse {
+            received_messages: Vec::new(),
+            acknowledge_confirmation: None,
+            modify_ack_deadline_confirmation: None,
+            subscription_properties: None,
+        }));
+    }
+
     Ok(None)
 }
 

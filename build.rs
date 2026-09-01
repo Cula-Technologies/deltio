@@ -9,6 +9,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &["proto/googleapis"],
         )?;
 
+    // The `rerun-if-env-changed` below opts out of cargo's default "rerun on any package
+    // change", so the proto sources have to be declared explicitly or edits to them are
+    // silently not picked up.
+    println!("cargo:rerun-if-changed=proto");
+
     // If we set CARGO_PKG_VERSION this way, then it will override the default value, which is
     // taken from the `version` in Cargo.toml.
     if let Ok(val) = std::env::var("DELTIO_RELEASE_VERSION") {

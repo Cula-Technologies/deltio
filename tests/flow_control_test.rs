@@ -37,6 +37,7 @@ async fn streaming_pull_with_max_outstanding(
                 client_id,
                 max_outstanding_messages: max_outstanding as i64,
                 max_outstanding_bytes: 0,
+                protocol_version: 0,
             };
             while let Some(req) = outgoing.recv().await {
                 yield req;

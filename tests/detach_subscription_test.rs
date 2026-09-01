@@ -94,6 +94,7 @@ async fn detach_subscription_streaming_pull_returns_failed_precondition() {
                 client_id,
                 max_outstanding_messages: 10,
                 max_outstanding_bytes: 0,
+                protocol_version: 0,
             };
         })
         .await;

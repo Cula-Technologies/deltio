@@ -198,6 +198,20 @@ impl TestHost {
         Sender<StreamingPullRequest>,
         Streaming<StreamingPullResponse>,
     ) {
+        self.streaming_pull_with_protocol_version(subscription_name, 0)
+            .await
+    }
+
+    /// Opens a streaming pull with the given `protocol_version` on the initial request.
+    /// `>= 1` opts in to server keepalives.
+    pub async fn streaming_pull_with_protocol_version(
+        &mut self,
+        subscription_name: &SubscriptionName,
+        protocol_version: i64,
+    ) -> (
+        Sender<StreamingPullRequest>,
+        Streaming<StreamingPullResponse>,
+    ) {
         let client_id = Uuid::new_v4().to_string();
         let (send_request, mut outgoing) = tokio::sync::mpsc::channel::<StreamingPullRequest>(100);
         let subscription = subscription_name.to_string();
@@ -214,6 +228,7 @@ impl TestHost {
                     client_id,
                     max_outstanding_messages: 100,
                     max_outstanding_bytes: 100_000_000,
+                    protocol_version,
                 };
 
                 // Deliver each request from the channel.
@@ -326,6 +341,22 @@ pub fn map_to_subscription_resource_with_dlq(
     resource
 }
 
+/// Constructs a keepalive ping: a request carrying no work at all, which is what
+/// google-cloud-pubsub v6 writes to the stream every 30 seconds.
+pub fn streaming_ping() -> StreamingPullRequest {
+    StreamingPullRequest {
+        ack_ids: Default::default(),
+        subscription: Default::default(),
+        modify_deadline_seconds: vec![],
+        modify_deadline_ack_ids: vec![],
+        stream_ack_deadline_seconds: 0,
+        client_id: Default::default(),
+        max_outstanding_messages: 0,
+        max_outstanding_bytes: 0,
+        protocol_version: 0,
+    }
+}
+
 /// Constructs a streaming ACK request.
 pub fn streaming_ack(ack_ids: Vec<String>) -> StreamingPullRequest {
     StreamingPullRequest {
@@ -337,6 +368,7 @@ pub fn streaming_ack(ack_ids: Vec<String>) -> StreamingPullRequest {
         client_id: Default::default(),
         max_outstanding_messages: 0,
         max_outstanding_bytes: 0,
+        protocol_version: 0,
     }
 }
 
@@ -351,6 +383,7 @@ pub fn streaming_nack(ack_ids: Vec<String>) -> StreamingPullRequest {
         client_id: Default::default(),
         max_outstanding_messages: 0,
         max_outstanding_bytes: 0,
+        protocol_version: 0,
     }
 }
 
@@ -365,5 +398,6 @@ pub fn streaming_modify_ack_deadline(ack_ids: Vec<String>, seconds: i32) -> Stre
         client_id: Default::default(),
         max_outstanding_messages: 0,
         max_outstanding_bytes: 0,
+        protocol_version: 0,
     }
 }

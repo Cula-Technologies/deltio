@@ -49,6 +49,7 @@ async fn streaming_pull_eod(
                 client_id,
                 max_outstanding_messages: 100,
                 max_outstanding_bytes: 0,
+                protocol_version: 0,
             };
             while let Some(req) = outgoing.recv().await {
                 yield req;
